@@ -271,6 +271,12 @@ th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{c
 
 const CFG = {
   SID: "17ML-xrRzgraMr1bQmLtArdWJOUbbmMZuzYAFb0sdpKw",
+  /* The four feed tabs are read straight from the Master Tracker (already link-shared),
+     so the page has data even before the HQ sheet's IMPORTRANGE mirrors are authorised. */
+  FEEDS: { "Deals":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Cash Log"},
+           "Calls":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"_calls"},
+           "Whop":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Whop Recon",range:"A10:Q1000"},
+           "Whop Payments":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Whop Payments"} },
   /* Apps Script web app URL (…/exec). Empty = read-only mode with a banner. */
   WEBAPP: "",
   /* SHA-256 of the team passphrase. Change with:
@@ -283,11 +289,11 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/" + CFG.SID + "/edit";
 
 /* ---------------- state ---------------- */
 const S = { deals:[], calls:[], whop:[], whopPay:[], roster:[], payouts:[], dismissed:[], config:{}, errors:{},
-            lines:[], people:{}, weeks:[], period:null, fetched:null, page:"pay", token:"" };
+            lines:[], people:{}, weeks:[], fromD:null, toD:null, fetched:null, page:"pay", token:"" };
 
 /* ---------------- data ---------------- */
 async function gviz(tab, range){
-  const map = (window.HQ_TEST_MAP || {})[tab];
+  const map = (window.HQ_TEST_MAP || CFG.FEEDS || {})[tab];
   const sid = map ? map.sid : CFG.SID, sheet = map ? map.tab : tab, rg = map ? map.range : range;
   const url = "https://docs.google.com/spreadsheets/d/" + sid + "/gviz/tq?tqx=out:json&headers=1&sheet=" +
               encodeURIComponent(sheet) + (rg ? "&range=" + encodeURIComponent(rg) : "") + "&t=" + Date.now();
@@ -302,7 +308,7 @@ async function gviz(tab, range){
   return d.table.rows.map(r => { const o = {}; cols.forEach((name, i) => { const c = r.c[i]; o[name] = c ? c.v : null; }); return o; })
     .filter(o => Object.values(o).some(v => v !== null && v !== ""));
 }
-const DATE_COLS = ["Week (Thu)","Call Date","Whop Paid Date","Date Paid","Paid Date","Period (Thu)","Dismissed At","Logged At"];
+const DATE_COLS = ["Week (Thu)","Call Date","Whop Paid Date","Date Paid","Paid Date","Period","Dismissed At","Logged At"];
 const gvDate = v => { const m = /^Date\((\d+),(\d+),(\d+)/.exec(String(v));
   return m ? m[1]+"-"+String(+m[2]+1).padStart(2,"0")+"-"+String(+m[3]).padStart(2,"0") : String(v); };
 function isoRows(rows){ rows.forEach(r => DATE_COLS.forEach(k => { if(k in r && r[k] !== null && r[k] !== "") r[k] = gvDate(r[k]); })); return rows; }
@@ -331,6 +337,7 @@ const todayISO = () => { const t = new Date(); return t.getFullYear() + "-" + St
 const thuWeek = iso => { const p = String(iso).split("-"); if(p.length !== 3) return iso;
   const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2])); const back = (t.getUTCDay() - 4 + 7) % 7; t.setUTCDate(t.getUTCDate() - back); return t.toISOString().slice(0,10); };
 const wkLabel = w => "Thu " + fmtD(w) + " – Wed " + fmtD(dayShift(w, 6));
+const inRange = d => { const x = String(d||""); return x >= S.fromD && x <= S.toD; };
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 
 /* ---------------- load ---------------- */
@@ -422,7 +429,7 @@ function compute(){
   const cur = thuWeek(todayISO());
   S.weeks = []; for(let w = thuWeek(first); w <= cur; w = dayShift(w, 7)) S.weeks.push(w);
   S.weeks.reverse();
-  if(!S.period || !S.weeks.includes(S.period)) S.period = cur;
+  if(!S.fromD){ S.fromD = cur; S.toD = dayShift(cur, 6); }
 
   /* Weekly retainers from the Roster (Kaia's DM line), accrued per week from the config date */
   S.roster.forEach(r => { const name = normName(r["Name"]); const weekly = amt(r["Weekly $"]); if(!name || !weekly) return;
@@ -452,7 +459,7 @@ function compute(){
 function personSummary(p){
   const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid);
   const owed = unpaid.reduce((s,L) => s + L.amount, 0);
-  const owedPeriod = unpaid.filter(L => L.week === S.period).reduce((s,L) => s + L.amount, 0);
+  const owedPeriod = unpaid.filter(L => inRange(L.date)).reduce((s,L) => s + L.amount, 0);
   const earnedAll = p.lines.reduce((s,L) => s + L.amount, 0);
   return { owed, owedPeriod, carried: owed - owedPeriod, unpaid, paid, earnedAll, paidAll: paid.reduce((s,L) => s + L.amount, 0) };
 }
@@ -467,6 +474,8 @@ function buildReviews(){
   if(S.errors.Deals) add("feed|deals-error", "U", "Deals feed unreadable", esc(S.errors.Deals), {locked:true});
   else if(!S.deals.length) add("feed|deals-empty", "U", "Deals tab is empty", "Open the HQ sheet, click cell A1 on the Deals tab and press <b>Allow access</b> on the IMPORTRANGE prompt. Do the same on Calls, Whop and Whop Payments. Until then nothing below can be computed.", {locked:true});
   if(!S.errors.Deals && S.deals.length && !S.whop.length) add("feed|whop-empty", "U", "Whop tab is empty", "Whop verification is off. Allow access on the Whop tab's IMPORTRANGE cell, and check the Whop Recon job on the Master Tracker ran.", {locked:true});
+  const hqErr = S.errors.Roster || S.errors.Payouts || S.errors.Config || S.errors.Dismissed;
+  if(hqErr) add("feed|hq-unreadable", "U", "Commission HQ sheet is not shared yet", "Roster, Payouts and Dismissed cannot be read (" + esc(String(hqErr).replace(/^Tab .*?: /, "")) + "). Default rates are in use, nothing shows as paid, and dismissals will not stick. Fix: open the HQ sheet → Share → Anyone with the link → Viewer.", {locked:true});
   if(!CFG.WEBAPP) add("cfg|no-webapp", "U", "Write endpoint not configured", "Paid and Dismiss checkboxes will not save. Deploy the Apps Script web app and paste its /exec URL into <span class=\"mono\">CFG.WEBAPP</span> in index.html.", {locked:true});
   const stamp = whopRefreshed();
   if(stamp){ const ageH = (Date.now() - stamp.getTime()) / 36e5, lim = cfgNum("Stale feed after (hours)", CFG.DEFAULTS.staleHours);
@@ -521,7 +530,7 @@ function renderAll(){
   const c1 = document.getElementById("cnt-l1"); c1.hidden = !S.dealRows.length; c1.textContent = S.dealRows.length;
   const c2 = document.getElementById("cnt-l2"); c2.hidden = !S.payouts.length; c2.textContent = S.payouts.filter(p => !truthy(p["Voided"])).length;
   const errs = Object.keys(S.errors);
-  document.getElementById("sf-status").innerHTML = errs.length ? '<span class="dot bad"></span>' + errs.length + ' tab(s) unreadable' : (S.deals.length ? '<span class="dot"></span>Sheet connected' : '<span class="dot warn"></span>Feeds empty');
+  document.getElementById("sf-status").innerHTML = S.errors.Deals ? '<span class="dot bad"></span>Deals feed unreadable' : (errs.length ? '<span class="dot warn"></span>Deals live · HQ sheet not shared' : (S.deals.length ? '<span class="dot"></span>Sheet connected' : '<span class="dot warn"></span>Feeds empty'));
   document.getElementById("sf-fetched").textContent = S.fetched ? "Fetched " + S.fetched.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "";
   document.getElementById("sf-write").innerHTML = CFG.WEBAPP ? '<span class="dot"></span>Writes on' : '<span class="dot bad"></span>Writes off (no endpoint)';
   document.getElementById("sf-sheet").href = SHEET_URL;
@@ -552,28 +561,47 @@ const whopPill = d => {
 const paidPill = (paid, amount) => amount > 0 ? (paid ? '<span class="pill ok">paid</span>' : '<span class="pill bad">owed</span>') : null;
 
 /* ----- Pay Period ----- */
+function presetRange(v){
+  const t = todayISO(), cur = thuWeek(t), ym = t.slice(0,7);
+  const monthEnd = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1], 0)).toISOString().slice(0,10); };
+  const prevYm = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1]-2, 1)).toISOString().slice(0,7); };
+  switch(v){
+    case "this-week": return [cur, dayShift(cur, 6)];
+    case "last-week": return [dayShift(cur, -7), dayShift(cur, -1)];
+    case "this-month": return [ym + "-01", monthEnd(ym)];
+    case "last-month": { const q = prevYm(ym); return [q + "-01", monthEnd(q)]; }
+    case "30": return [dayShift(t, -29), t];
+    case "all": { const ds = S.dealRows.map(d => d.date).concat(S.lines.map(L => L.date)).filter(x => /^\d{4}-\d\d-\d\d$/.test(x)).sort(); return [ds[0] || t, t]; }
+    default: return null;
+  }
+}
+function presetFor(a, b){
+  for(const v of ["this-week","last-week","this-month","last-month","30","all"]){ const r = presetRange(v); if(r && r[0] === a && r[1] === b) return v; }
+  return "custom";
+}
 function renderPay(){
-  const w = S.period;
   document.getElementById("pg-title").textContent = "Pay Period";
-  document.getElementById("pg-sub").textContent = w ? wkLabel(w) + (w === thuWeek(todayISO()) ? " · current week" : "") : "";
-  document.getElementById("pg-ctl").innerHTML = '<label class="role" for="wk">Period</label><select id="wk">' + S.weeks.map(x => '<option value="' + x + '"' + (x === w ? ' selected' : '') + '>' + esc(wkLabel(x)) + '</option>').join("") + '</select><button class="btn" id="refresh">Refresh</button>';
-  document.getElementById("wk").onchange = e => { S.period = e.target.value; renderPay(); };
+  const preset = presetFor(S.fromD, S.toD);
+  document.getElementById("pg-sub").textContent = fmtDY(S.fromD) + " – " + fmtDY(S.toD) + (preset === "this-week" ? " · current webinar week" : "");
+  document.getElementById("pg-ctl").innerHTML = '<select id="preset" aria-label="Preset range">' +
+    [["this-week","This week (Thu–Wed)"],["last-week","Last week"],["this-month","This month"],["last-month","Last month"],["30","Last 30 days"],["all","All time"],["custom","Custom"]]
+      .map(([v,l]) => '<option value="' + v + '"' + (v === preset ? ' selected' : '') + '>' + l + '</option>').join("") + '</select>' +
+    '<input type="date" id="from" value="' + S.fromD + '" aria-label="From"><span class="role">to</span><input type="date" id="to" value="' + S.toD + '" aria-label="To">' +
+    '<button class="btn" id="refresh">Refresh</button>';
+  document.getElementById("preset").onchange = e => { const r = presetRange(e.target.value); if(r){ S.fromD = r[0]; S.toD = r[1]; renderPay(); } };
+  const setRange = () => { const a = document.getElementById("from").value, b = document.getElementById("to").value;
+    if(/^\d{4}-\d\d-\d\d$/.test(a) && /^\d{4}-\d\d-\d\d$/.test(b)){ S.fromD = a <= b ? a : b; S.toD = a <= b ? b : a; renderPay(); } };
+  document.getElementById("from").onchange = setRange; document.getElementById("to").onchange = setRange;
   document.getElementById("refresh").onclick = () => { toast("Refreshing…"); load().then(() => toast("Up to date")); };
 
-  const dealsW = S.dealRows.filter(d => d.week === w), showsW = S.showRows.filter(s => s.week === w);
-  const linesW = S.lines.filter(L => L.week === w);
+  const dealsW = S.dealRows.filter(d => inRange(d.date)), showsW = S.showRows.filter(s => inRange(s.date));
+  const linesW = S.lines.filter(L => inRange(L.date));
   const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owed > 0.004).sort((a,b) => b.s.owed - a.s.owed);
   const totalOwed = names.reduce((s,x) => s + x.s.owed, 0);
   const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
   const cashW = dealsW.reduce((s,d) => s + d.cash, 0), earnedW = linesW.reduce((s,L) => s + L.amount, 0);
 
   let h = "";
-  h += panel("This period", '<div class="r4">' +
-    cell("Cash closed", money(cashW), {sub: num(dealsW.length) + " deal" + (dealsW.length === 1 ? "" : "s") + " on the Cash Log"}) +
-    cell("Commission earned", money(earnedW), {sub: num(linesW.length) + " lines · " + num(showsW.length) + " setter show" + (showsW.length === 1 ? "" : "s")}) +
-    cell("Owed to the team", money(totalOwed), {sub: names.length + " " + (names.length === 1 ? "person" : "people") + " · all unpaid, any period", tone: totalOwed > 0 ? "bad" : "good"}) +
-    cell("Needs review", String(open.length), {sub: open.filter(r => r.level === "U").length + " urgent", tone: open.some(r => r.level === "U") ? "bad" : (open.length ? "" : "good")}) + '</div>');
-
   /* review queue */
   const qi = r => '<div class="qi' + (r.locked ? ' locked' : '') + '" data-id="' + esc(r.id) + '">' +
     '<input type="checkbox" aria-label="Dismiss" ' + (r.locked ? 'disabled' : '') + '>' +
@@ -687,7 +715,7 @@ function renderL2(){
   const rows = S.payouts.slice().sort((a,b) => String(a["Logged At"]||a["Date Paid"]) < String(b["Logged At"]||b["Date Paid"]) ? 1 : -1).map(p => {
     const ids = String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean); const v = truthy(p["Voided"]);
     const names = ids.map(id => (S.lines.find(L => L.id === id) || {}).prospect).filter(Boolean);
-    return [esc(fmtDY(p["Date Paid"])), esc(title(p["Person"])), esc(p["Role"] || "") || null, (v ? '<s>' : '') + money(amt(p["Amount Paid"])) + (v ? '</s>' : ''), has(p["Period (Thu)"]) ? esc(fmtD(p["Period (Thu)"])) : null,
+    return [esc(fmtDY(p["Date Paid"])), esc(title(p["Person"])), esc(p["Role"] || "") || null, (v ? '<s>' : '') + money(amt(p["Amount Paid"])) + (v ? '</s>' : ''), has(p["Period"]) ? esc(String(p["Period"]).replace(/(\d{4}-\d\d-\d\d) to (\d{4}-\d\d-\d\d)/, (m,a,b) => fmtD(a) + " – " + fmtD(b))) : null,
       ids.length ? '<button class="name-btn lines-btn" data-id="' + esc(p["Payout ID"]) + '">' + ids.length + ' line' + (ids.length === 1 ? "" : "s") + '</button>' : '<span class="mute">FIFO</span>',
       names.length ? esc(names.slice(0,3).join(", ")) + (names.length > 3 ? " +" + (names.length - 3) : "") : null,
       esc(p["Paid By"] || "") || null, esc(p["Notes"] || "") || null, '<span class="mute">' + esc(p["Payout ID"]) + '</span>',
@@ -697,7 +725,7 @@ function renderL2(){
   const pg = document.getElementById("page-l2"); pg.innerHTML = h;
   pg.querySelectorAll(".lines-btn").forEach(b => b.onclick = () => openPayout(b.dataset.id));
   pg.querySelectorAll(".void-btn").forEach(b => b.onclick = () => confirmVoid(b.dataset.id));
-  document.getElementById("csv2").onclick = () => downloadCSV("sca-payouts-" + todayISO() + ".csv", [["Payout ID","Date Paid","Person","Role","Amount Paid","Period (Thu)","Deals Covered","Paid By","Notes","Voided"]].concat(S.payouts.map(p => ["Payout ID","Date Paid","Person","Role","Amount Paid","Period (Thu)","Deals Covered","Paid By","Notes","Voided"].map(k => p[k] ?? ""))));
+  document.getElementById("csv2").onclick = () => downloadCSV("sca-payouts-" + todayISO() + ".csv", [["Payout ID","Date Paid","Person","Role","Amount Paid","Period","Deals Covered","Paid By","Notes","Voided"]].concat(S.payouts.map(p => ["Payout ID","Date Paid","Person","Role","Amount Paid","Period","Deals Covered","Paid By","Notes","Voided"].map(k => p[k] ?? ""))));
 }
 function openPayout(id){
   const p = S.payouts.find(x => String(x["Payout ID"]) === id); if(!p) return;
@@ -726,7 +754,7 @@ function confirmPayout(k, onCancel){
     if(!paidBy) throw new Error("Who sent it? Put a name in Paid by.");
     if(!/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error("Date needs to be YYYY-MM-DD.");
     localStorage.setItem("hq.paidBy", paidBy);
-    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owed*100)/100, period:S.period, datePaid:date, lines:s.unpaid.map(L => L.id), paidBy, notes }, "Logged " + money(s.owed) + " to " + title(k));
+    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owed*100)/100, period:S.fromD + " to " + S.toD, datePaid:date, lines:s.unpaid.map(L => L.id), paidBy, notes }, "Logged " + money(s.owed) + " to " + title(k));
     closeDrawer();
   }; fn.cancel = onCancel;
   modal("Mark " + title(k) + " paid", '<div class="kv"><b>Amount</b><span style="font-family:var(--mono);font-weight:600">' + money(s.owed) + '</span><b>Covers</b><span>' + s.unpaid.length + ' line' + (s.unpaid.length === 1 ? "" : "s") + (s.carried > 0.004 ? ' (' + money(s.carried) + ' carried from earlier periods)' : '') + '</span></div>' +
