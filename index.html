@@ -1,0 +1,797 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>SCA Commission HQ</title>
+<style>
+:root{
+  --ground:#FDF9F4; --surface:#FFFFFF; --surface-2:#F7EFEA; --surface-3:#F1E4DD;
+  --ink:#221418; --ink-2:#4C3A3D; --ink-3:#8A7477;
+  --accent:#7A1420; --head-bg:#7A1420; --head-ink:#FFFFFF;
+  --hair:#E4D6CF; --hair-2:#F0E4DE;
+  --good:#2F6B4F; --warn:#9A6B12; --crit:#B3261E;
+  --good-bg:#E6F0EA; --warn-bg:#F6EEDD; --crit-bg:#F8E6E4;
+  --side-bg:#221418; --side-ink:#F4EBE6; --side-ink-2:#B9A3A0; --side-hair:#3A2628; --side-active:#7A1420;
+  --shadow:0 1px 2px rgba(34,20,24,.05), 0 8px 24px -14px rgba(34,20,24,.16);
+  --display:Georgia,'Iowan Old Style','Times New Roman',serif;
+  --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  --mono:'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#17110F; --surface:#221A19; --surface-2:#2C2221; --surface-3:#352827;
+    --ink:#F4EBE6; --ink-2:#C4B0AC; --ink-3:#8E7B78;
+    --accent:#DC6076; --head-bg:#4A1F27; --head-ink:#F7E4E6;
+    --hair:#3A2B2B; --hair-2:#2E2323;
+    --good:#5FAF87; --warn:#D2A03F; --crit:#E0706A;
+    --good-bg:#1D2A24; --warn-bg:#2C2418; --crit-bg:#2E1E1D;
+    --side-bg:#110C0B; --side-ink:#F4EBE6; --side-ink-2:#8E7B78; --side-hair:#2A1F1F; --side-active:#4A1F27;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#17110F; --surface:#221A19; --surface-2:#2C2221; --surface-3:#352827;
+  --ink:#F4EBE6; --ink-2:#C4B0AC; --ink-3:#8E7B78;
+  --accent:#DC6076; --head-bg:#4A1F27; --head-ink:#F7E4E6;
+  --hair:#3A2B2B; --hair-2:#2E2323;
+  --good:#5FAF87; --warn:#D2A03F; --crit:#E0706A;
+  --good-bg:#1D2A24; --warn-bg:#2C2418; --crit-bg:#2E1E1D;
+  --side-bg:#110C0B; --side-ink:#F4EBE6; --side-ink-2:#8E7B78; --side-hair:#2A1F1F; --side-active:#4A1F27;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box; margin:0; padding:0}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--ground); color:var(--ink-2); font-family:var(--ui); font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+button{font-family:var(--ui)}
+
+/* ---------- shell ---------- */
+.shell{display:flex; min-height:100vh}
+.side{width:236px; flex:0 0 236px; background:var(--side-bg); color:var(--side-ink); display:flex; flex-direction:column; position:sticky; top:0; height:100vh}
+.brand{padding:22px 20px 18px; border-bottom:1px solid var(--side-hair)}
+.brand .k{font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--side-ink-2)}
+.brand .t{font-family:var(--display); font-size:21px; font-weight:600; line-height:1.15; margin-top:4px}
+.nav{padding:14px 12px; display:flex; flex-direction:column; gap:2px}
+.nav button{appearance:none; background:none; border:none; color:var(--side-ink-2); text-align:left; padding:10px 12px; border-radius:6px; cursor:pointer; font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:10px; width:100%}
+.nav button .ic{width:18px; text-align:center; font-family:var(--mono); font-size:12px; opacity:.8}
+.nav button:hover{color:var(--side-ink); background:rgba(255,255,255,.04)}
+.nav button[aria-current="page"]{background:var(--side-active); color:#fff}
+.nav button .cnt{margin-left:auto; font-family:var(--mono); font-size:11px; background:rgba(255,255,255,.12); padding:1px 7px; border-radius:10px}
+.nav button .cnt.hot{background:#E0706A; color:#1a0c0c}
+.side-foot{margin-top:auto; padding:16px 20px 20px; border-top:1px solid var(--side-hair); font-size:11.5px; color:var(--side-ink-2); display:flex; flex-direction:column; gap:6px}
+.side-foot a{color:var(--side-ink)}
+.dot{display:inline-block; width:8px; height:8px; border-radius:50%; background:#5FAF87; margin-right:6px; vertical-align:middle}
+.dot.bad{background:#E0706A}
+.dot.warn{background:#D2A03F}
+.main{flex:1; min-width:0; padding:28px 32px 60px}
+.topbar{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:22px}
+.topbar h1{font-family:var(--display); font-size:30px; font-weight:600; color:var(--ink); line-height:1.1; letter-spacing:-.01em}
+.topbar .sub{font-size:13px; color:var(--ink-3); margin-top:4px}
+.ctl{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+select,input[type="text"],input[type="password"],input[type="search"],textarea{font-family:var(--ui); font-size:13px; color:var(--ink); background:var(--surface); border:1px solid var(--hair); border-radius:6px; padding:7px 10px}
+select:focus,input:focus,textarea:focus{outline:2px solid var(--accent); outline-offset:1px}
+.btn{appearance:none; border:1px solid var(--hair); background:var(--surface); color:var(--ink); font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:6px; cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--crit); border-color:var(--crit)}
+.btn:disabled{opacity:.5; cursor:default}
+.btn.sm{padding:4px 9px; font-size:11.5px}
+
+/* ---------- panels ---------- */
+.stack{display:flex; flex-direction:column; gap:18px}
+.r3{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--hair)}
+.r4{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--hair)}
+@media(max-width:1000px){.r4{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.r3,.r4{grid-template-columns:1fr}}
+.panel{background:var(--surface); border:1px solid var(--hair); border-radius:8px; overflow:hidden; box-shadow:var(--shadow)}
+.panel-head{background:var(--head-bg); color:var(--head-ink); font-family:var(--display); font-size:15.5px; font-weight:600; padding:11px 16px; letter-spacing:.01em; display:flex; align-items:center; justify-content:space-between; gap:12px}
+.panel-head .r{font-family:var(--ui); font-size:11.5px; font-weight:600; opacity:.85}
+.cell{background:var(--surface); display:flex; flex-direction:column; min-width:0}
+.cell-label{background:var(--surface-2); padding:7px 12px; font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.cell-body{padding:11px 12px 12px; display:flex; flex-direction:column; gap:2px}
+.cell-val{font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:23px; font-weight:600; color:var(--ink); line-height:1.1; letter-spacing:-.02em}
+.cell-sub{font-size:11px; color:var(--ink-3); line-height:1.35}
+.cell.good .cell-val{color:var(--good)}
+.cell.bad .cell-val{color:var(--crit)}
+.tw{overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-size:12.5px; min-width:640px}
+th{background:var(--surface-2); color:var(--ink-3); font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; text-align:right; padding:8px 12px; white-space:nowrap; border-bottom:1px solid var(--hair)}
+td{padding:8px 12px; text-align:right; border-bottom:1px solid var(--hair-2); font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink); white-space:nowrap}
+th.l,td.l{text-align:left; font-family:var(--ui)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface-2)}
+td.mute{color:var(--ink-3)}
+th.sort{cursor:pointer; user-select:none}
+th.sort:hover{color:var(--ink)}
+th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{content:" ↓"}
+.pill{display:inline-block; font-family:var(--ui); font-size:10px; font-weight:700; letter-spacing:.04em; padding:2px 8px; border-radius:20px; background:var(--surface-3); color:var(--ink-2)}
+.pill.ok{background:var(--good-bg); color:var(--good)}
+.pill.chk{background:var(--warn-bg); color:var(--warn)}
+.pill.bad{background:var(--crit-bg); color:var(--crit)}
+.note{border:1px solid var(--hair); border-left:3px solid var(--accent); background:var(--surface); border-radius:6px; padding:12px 16px; font-size:13px; display:flex; flex-direction:column; gap:5px}
+.note strong{color:var(--ink)}
+.note.warn{border-left-color:var(--warn)}
+.note.crit{border-left-color:var(--crit)}
+.empty{padding:22px 16px; color:var(--ink-3); font-size:13px; text-align:center}
+.name-btn{appearance:none; background:none; border:none; padding:0; color:var(--ink); font-family:var(--ui); font-size:13px; font-weight:600; cursor:pointer; text-decoration:underline; text-decoration-color:var(--hair); text-underline-offset:3px}
+.name-btn:hover{text-decoration-color:var(--accent); color:var(--accent)}
+.role{font-size:11px; color:var(--ink-3); font-family:var(--ui)}
+
+/* ---------- review queue ---------- */
+.q{display:flex; flex-direction:column}
+.qi{display:flex; gap:12px; align-items:flex-start; padding:11px 16px; border-bottom:1px solid var(--hair-2)}
+.qi:last-child{border-bottom:none}
+.qi input[type="checkbox"]{margin-top:4px; width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex:0 0 16px}
+.qi .b{flex:1; min-width:0}
+.qi .t{font-weight:600; color:var(--ink); font-size:13.5px; display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+.qi .d{font-size:12.5px; color:var(--ink-2); margin-top:2px}
+.qi .d .mono{font-family:var(--mono); font-size:12px}
+.lv{font-size:9.5px; font-weight:800; letter-spacing:.08em; padding:2px 7px; border-radius:4px; text-transform:uppercase}
+.lv.u{background:var(--crit); color:#fff}
+.lv.i{background:var(--surface-3); color:var(--ink-2)}
+.qi.locked input{visibility:hidden}
+
+/* ---------- pay table ---------- */
+.pay td{padding:10px 12px}
+.pay input[type="checkbox"]{width:18px; height:18px; accent-color:var(--good); cursor:pointer; vertical-align:middle}
+.pay .owed{font-size:16px; font-weight:600}
+
+/* ---------- drawer ---------- */
+.scrim{position:fixed; inset:0; background:rgba(20,10,12,.45); display:none; z-index:40}
+.scrim.on{display:block}
+.drawer{position:fixed; top:0; right:0; height:100vh; width:min(720px,100vw); background:var(--surface); border-left:1px solid var(--hair); box-shadow:-12px 0 40px -20px rgba(0,0,0,.5); z-index:50; transform:translateX(100%); transition:transform .18s ease; display:flex; flex-direction:column}
+.drawer.on{transform:none}
+.drawer-head{padding:18px 20px 14px; border-bottom:1px solid var(--hair); display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
+.drawer-head h2{font-family:var(--display); font-size:22px; color:var(--ink); font-weight:600; line-height:1.1}
+.drawer-head .sub{font-size:12.5px; color:var(--ink-3); margin-top:3px}
+.drawer-body{overflow:auto; flex:1}
+.drawer-body table{min-width:0; font-size:12px}
+.drawer-body td,.drawer-body th{padding:7px 9px}
+.drawer-foot{padding:14px 20px; border-top:1px solid var(--hair); display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap}
+.x{appearance:none; border:none; background:var(--surface-2); color:var(--ink-2); width:32px; height:32px; border-radius:50%; cursor:pointer; font-size:16px}
+.sec{padding:10px 20px 4px; font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3)}
+
+/* ---------- modal ---------- */
+.modal{position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center; padding:20px}
+.modal.on{display:flex}
+.modal .box{background:var(--surface); border:1px solid var(--hair); border-radius:10px; width:min(480px,100%); box-shadow:var(--shadow); overflow:hidden}
+.modal .bh{padding:16px 20px 10px}
+.modal h3{font-family:var(--display); font-size:20px; color:var(--ink); font-weight:600}
+.modal .bb{padding:0 20px 16px; font-size:13.5px; display:flex; flex-direction:column; gap:10px}
+.modal label{font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); display:flex; flex-direction:column; gap:4px}
+.modal .bf{padding:12px 20px; border-top:1px solid var(--hair); display:flex; justify-content:flex-end; gap:8px}
+.kv{display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13px}
+.kv b{color:var(--ink-3); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.05em}
+.err{color:var(--crit); font-size:12.5px}
+
+/* ---------- gate ---------- */
+.gate{position:fixed; inset:0; background:var(--ground); z-index:100; display:flex; align-items:center; justify-content:center; padding:20px}
+.gate .box{width:min(380px,100%); background:var(--surface); border:1px solid var(--hair); border-radius:10px; padding:26px 26px 22px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:12px}
+.gate h1{font-family:var(--display); font-size:24px; color:var(--ink); font-weight:600}
+.gate p{font-size:13px; color:var(--ink-3)}
+.gate input{font-size:15px; padding:10px 12px}
+
+/* ---------- misc ---------- */
+.toast{position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--ground); padding:10px 16px; border-radius:8px; font-size:13px; z-index:70; display:none; max-width:90vw}
+.toast.on{display:block}
+.filters{display:flex; gap:8px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--hair); background:var(--surface-2)}
+.filters select,.filters input{font-size:12.5px; padding:6px 9px}
+.skel{height:14px; background:var(--surface-3); border-radius:4px; animation:sk 1.2s infinite}
+@keyframes sk{0%,100%{opacity:.55}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none} .drawer{transition:none}}
+.menu-btn{display:none}
+@media(max-width:860px){
+  .shell{flex-direction:column}
+  .side{width:100%; flex:none; height:auto; position:static}
+  .nav{flex-direction:row; overflow-x:auto; padding:8px 10px}
+  .nav button{white-space:nowrap; width:auto}
+  .side-foot{display:none}
+  .main{padding:18px 14px 50px}
+  .topbar h1{font-size:24px}
+}
+@media print{.side,.ctl,.scrim,.drawer,.toast{display:none!important} .main{padding:0}}
+</style>
+</head>
+<body>
+
+<div class="gate" id="gate">
+  <form class="box" id="gate-form" autocomplete="off">
+    <h1>SCA Commission HQ</h1>
+    <p>Team passphrase to continue.</p>
+    <input type="password" id="gate-pw" placeholder="Passphrase" aria-label="Passphrase" autofocus>
+    <div class="err" id="gate-err" hidden>That is not it.</div>
+    <button class="btn primary" type="submit">Open</button>
+  </form>
+</div>
+
+<div class="shell" id="shell" hidden>
+  <aside class="side">
+    <div class="brand">
+      <div class="k">She Creates Academy</div>
+      <div class="t">Commission HQ</div>
+    </div>
+    <nav class="nav" aria-label="Sections">
+      <button id="nav-pay" data-page="pay" aria-current="page"><span class="ic">01</span>Pay Period<span class="cnt" id="cnt-pay" hidden></span></button>
+      <button id="nav-l1" data-page="l1"><span class="ic">02</span>Ledger 1 · Deals<span class="cnt" id="cnt-l1" hidden></span></button>
+      <button id="nav-l2" data-page="l2"><span class="ic">03</span>Ledger 2 · Payouts<span class="cnt" id="cnt-l2" hidden></span></button>
+    </nav>
+    <div class="side-foot">
+      <div id="sf-status"><span class="dot"></span>Loading</div>
+      <div id="sf-fetched"></div>
+      <div id="sf-write"></div>
+      <a id="sf-sheet" href="#" target="_blank" rel="noopener">Open the HQ sheet</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="pg-title">Pay Period</h1>
+        <div class="sub" id="pg-sub"></div>
+      </div>
+      <div class="ctl" id="pg-ctl"></div>
+    </div>
+    <section class="stack" id="page-pay"></section>
+    <section class="stack" id="page-l1" hidden></section>
+    <section class="stack" id="page-l2" hidden></section>
+  </main>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div><h2 id="dr-title"></h2><div class="sub" id="dr-sub"></div></div>
+    <button class="x" id="dr-close" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body" id="dr-body"></div>
+  <div class="drawer-foot" id="dr-foot"></div>
+</aside>
+
+<div class="modal" id="modal"><div class="box">
+  <div class="bh"><h3 id="md-title"></h3></div>
+  <div class="bb" id="md-body"></div>
+  <div class="bf"><button class="btn" id="md-cancel">Cancel</button><button class="btn primary" id="md-ok">Confirm</button></div>
+</div></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* =====================================================================
+   SCA Commission HQ
+   Reads the "SCA Commission HQ" Google Sheet live (gviz, anyone-with-link
+   viewer). Writes (payouts, dismissals, voids) go through a tiny Apps Script
+   web app bound to that sheet; the passphrase entered at the gate is the
+   write token, checked server-side against Script Property HQ_TOKEN.
+   ===================================================================== */
+
+const CFG = {
+  SID: "17ML-xrRzgraMr1bQmLtArdWJOUbbmMZuzYAFb0sdpKw",
+  /* Apps Script web app URL (…/exec). Empty = read-only mode with a banner. */
+  WEBAPP: "",
+  /* SHA-256 of the team passphrase. Change with:
+     python3 -c "import hashlib;print(hashlib.sha256(b'NEW').hexdigest())" */
+  PASS_HASH: "8bbd6399df87ce04dc3b01c112b6f4c49d61890d4e796488a518b684855bfeb6",
+  DEFAULTS: { closerRate:0.10, setterRateBefore:0.05, show:30, close:50, kaiaWeekly:150, flatFrom:"2026-08-27", staleHours:36 },
+  REVIEW_WINDOW_DAYS: 60
+};
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/" + CFG.SID + "/edit";
+
+/* ---------------- state ---------------- */
+const S = { deals:[], calls:[], whop:[], whopPay:[], roster:[], payouts:[], dismissed:[], config:{}, errors:{},
+            lines:[], people:{}, weeks:[], period:null, fetched:null, page:"pay", token:"" };
+
+/* ---------------- data ---------------- */
+async function gviz(tab, range){
+  const map = (window.HQ_TEST_MAP || {})[tab];
+  const sid = map ? map.sid : CFG.SID, sheet = map ? map.tab : tab, rg = map ? map.range : range;
+  const url = "https://docs.google.com/spreadsheets/d/" + sid + "/gviz/tq?tqx=out:json&headers=1&sheet=" +
+              encodeURIComponent(sheet) + (rg ? "&range=" + encodeURIComponent(rg) : "") + "&t=" + Date.now();
+  const res = await fetch(url);
+  if(!res.ok) throw new Error("Tab “" + tab + "”: HTTP " + res.status + ". Is the sheet shared with anyone-with-the-link (viewer)?");
+  const text = await res.text();
+  const open = text.indexOf("setResponse("), close = text.lastIndexOf(")");
+  if(open === -1 || close === -1) throw new Error("Tab “" + tab + "” returned an unexpected response.");
+  const d = JSON.parse(text.slice(open + 12, close));
+  if(d.status !== "ok") throw new Error("Tab “" + tab + "”: " + JSON.stringify(d.errors || d.status));
+  const cols = d.table.cols.map(c => (c.label || c.id || "").trim());
+  return d.table.rows.map(r => { const o = {}; cols.forEach((name, i) => { const c = r.c[i]; o[name] = c ? c.v : null; }); return o; })
+    .filter(o => Object.values(o).some(v => v !== null && v !== ""));
+}
+const DATE_COLS = ["Week (Thu)","Call Date","Whop Paid Date","Date Paid","Paid Date","Period (Thu)","Dismissed At","Logged At"];
+const gvDate = v => { const m = /^Date\((\d+),(\d+),(\d+)/.exec(String(v));
+  return m ? m[1]+"-"+String(+m[2]+1).padStart(2,"0")+"-"+String(+m[3]).padStart(2,"0") : String(v); };
+function isoRows(rows){ rows.forEach(r => DATE_COLS.forEach(k => { if(k in r && r[k] !== null && r[k] !== "") r[k] = gvDate(r[k]); })); return rows; }
+/* Cash Log money can arrive as a number or as text like "$3,000" / "3k". */
+const amt = v => { if(typeof v === "number") return isFinite(v) ? v : 0;
+  let s = String(v||"").trim().toLowerCase().replace(/[$,\s]/g,""); if(!s) return 0;
+  const k = /k$/.test(s); s = s.replace(/k$/,""); const x = parseFloat(s); return isFinite(x) ? (k ? x*1000 : x) : 0; };
+const has = v => v !== null && v !== undefined && v !== "";
+const normName = s => String(s||"").trim().toUpperCase();
+const ARTIFACT = /^\(UNASSIGNED\)$|^NONE$|^N\/A$|^-+$/i;
+const isPerson = s => has(s) && !ARTIFACT.test(normName(s));
+const truthy = v => v === true || /^true$|^yes$|^1$/i.test(String(v||"").trim());
+
+/* ---------------- format ---------------- */
+const money = v => (v === null || v === undefined || !isFinite(v)) ? "—" : (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: (Math.round(Math.abs(v)*100)%100) ? 2 : 0, maximumFractionDigits:2});
+const num = v => (v === null || v === undefined || !isFinite(v)) ? "—" : Math.round(v).toLocaleString("en-US");
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const fmtD = iso => { const p = String(iso||"").split("-"); return p.length === 3 ? MON[+p[1]-1] + " " + (+p[2]) : String(iso||"—"); };
+const fmtDY = iso => { const p = String(iso||"").split("-"); return p.length === 3 ? MON[+p[1]-1] + " " + (+p[2]) + ", " + p[0] : String(iso||"—"); };
+const title = s => String(s||"").toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dayShift = (iso, d) => { const p = String(iso).split("-"); if(p.length !== 3) return iso;
+  const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2] + d)); return t.toISOString().slice(0,10); };
+const todayISO = () => { const t = new Date(); return t.getFullYear() + "-" + String(t.getMonth()+1).padStart(2,"0") + "-" + String(t.getDate()).padStart(2,"0"); };
+/* Thursday-anchored week containing an ISO date */
+const thuWeek = iso => { const p = String(iso).split("-"); if(p.length !== 3) return iso;
+  const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2])); const back = (t.getUTCDay() - 4 + 7) % 7; t.setUTCDate(t.getUTCDate() - back); return t.toISOString().slice(0,10); };
+const wkLabel = w => "Thu " + fmtD(w) + " – Wed " + fmtD(dayShift(w, 6));
+const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+
+/* ---------------- load ---------------- */
+async function load(){
+  const tabs = ["Deals","Calls","Whop","Whop Payments","Roster","Payouts","Dismissed","Config"];
+  const out = await Promise.all(tabs.map(t => gviz(t).catch(e => e)));
+  const pick = (i, key) => { if(out[i] instanceof Error){ S.errors[key] = out[i].message; return []; } delete S.errors[key]; return isoRows(out[i]); };
+  S.deals = pick(0,"Deals"); S.calls = pick(1,"Calls"); S.whop = pick(2,"Whop"); S.whopPay = pick(3,"Whop Payments");
+  S.roster = pick(4,"Roster"); S.payouts = pick(5,"Payouts").filter(r => has(r["Payout ID"])); S.dismissed = pick(6,"Dismissed");
+  S.config = {}; pick(7,"Config").forEach(r => { if(has(r["Setting"])) S.config[String(r["Setting"]).trim()] = r["Value"]; });
+  S.fetched = new Date();
+  compute();
+  renderAll();
+}
+
+/* ---------------- model ---------------- */
+function cfgNum(key, dflt){ const v = S.config[key]; const x = typeof v === "number" ? v : parseFloat(String(v||"")); return isFinite(x) ? x : dflt; }
+function cfgDate(key, dflt){ const v = S.config[key]; return has(v) ? gvDate(v) : dflt; }
+
+function rosterFor(name){
+  const r = S.roster.find(x => normName(x["Name"]) === name);
+  if(!r) return null;
+  return { name, role: String(r["Role"]||""), closerRate: amt(r["Closer Rate"]) || 0, show: amt(r["Show $"]), close: amt(r["Close $"]),
+           weekly: amt(r["Weekly $"]), active: r["Active"] === null ? true : truthy(r["Active"]), notes: String(r["Notes"]||""), onRoster:true };
+}
+
+function compute(){
+  const D = CFG.DEFAULTS;
+  const FLAT_FROM = cfgDate("Setter flat model from", D.flatFrom);
+  const KAIA_FROM = cfgDate("Kaia weekly from", FLAT_FROM);
+  const SETTER_BEFORE = cfgNum("Setter rate (before)", D.setterRateBefore);
+
+  /* Whop status per deal: prospect + call date, ±1 day tolerance */
+  const wmap = {};
+  S.whop.forEach(r => { const nm = normName(r["Prospect"]), cd = String(r["Call Date"]||""); if(!nm || !cd) return;
+    [0,-1,1].forEach((d,i) => { const k = nm + "|" + dayShift(cd, d); if(i === 0 || !wmap[k]) wmap[k] = r; }); });
+
+  const people = {};
+  const P = name => { if(!people[name]){ const ro = rosterFor(name); people[name] = { name, roster: ro, roles:{}, lines:[] }; } return people[name]; };
+  const lines = [];   /* every commission line: {id, person, role, amount, dealKey, date, week, prospect, offer, cash, kind} */
+
+  /* Deals from the Cash Log */
+  S.dealRows = S.deals.map((r, i) => {
+    const date = String(r["Call Date"]||""), week = has(r["Week (Thu)"]) ? String(r["Week (Thu)"]) : thuWeek(date);
+    const prospect = String(r["Prospect"]||"").trim(), closer = normName(r["Closer"]), setter = normName(r["Setter"]);
+    const cash = amt(r["Cash Collected"]), revenue = amt(r["Revenue Contracted"]);
+    const flat = week >= FLAT_FROM;
+    const key = "D|" + date + "|" + normName(prospect) + "|" + closer;
+    const w = wmap[normName(prospect) + "|" + date] || null;
+    /* the recon job runs once a day at 6 AM PT, so a deal filed today has no row yet: that is pending, not missing */
+    const whopStatus = w ? String(w["Recon Status"]||"") : (S.whop.length ? (daysBetween(date, todayISO()) <= 2 ? "PENDING RECON" : "NOT ON WHOP") : "");
+    const refunded = w ? amt(w["Whop Refunded"]) : 0;
+    const d = { i, key, date, week, prospect, closer, setter, offer:String(r["Offer"]||""), payType:String(r["Pay Type"]||""), cash, revenue,
+                flat, whop:w, whopStatus, refunded, closerComm:0, setterComm:0, dmSetter: closer === "KAIA" ? "KAIA" : "", lines:[] };
+    /* closer line */
+    if(isPerson(closer)){
+      const ro = rosterFor(closer); const rate = ro && ro.closerRate ? ro.closerRate : D.closerRate;
+      const logged = amt(r["Closer Commission"]);
+      d.closerComm = logged > 0 ? logged : Math.round(cash * rate * 100) / 100;
+      const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date, week, prospect, offer:d.offer, cash, kind:"close" };
+      lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
+    }
+    /* setter line: flat model = $50 on a close (replaces the $30 show); before = % of cash */
+    if(isPerson(setter)){
+      const ro = rosterFor(setter);
+      d.setterComm = flat ? (ro && ro.close ? ro.close : D.close) : (amt(r["Setter Commission"]) || Math.round(cash * SETTER_BEFORE * 100) / 100);
+      const L = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date, week, prospect, offer:d.offer, cash, kind: flat ? "set-close" : "set-pct" };
+      lines.push(L); d.lines.push(L); P(setter).roles.Setter = 1;
+    }
+    return d;
+  });
+
+  /* Setter shows without a close: held calls on _calls, flat model only */
+  const closedKeys = new Set(S.dealRows.map(d => normName(d.prospect) + "|" + d.date));
+  S.showRows = [];
+  S.calls.forEach(r => {
+    const week = String(r["Week (Thu)"]||""), date = String(r["Call Date"]||""), setter = normName(r["Setter"]), prospect = String(r["Prospect"]||"").trim();
+    if(week < FLAT_FROM || amt(r["Held"]) !== 1 || amt(r["Closed"]) === 1 || !isPerson(setter)) return;
+    if(closedKeys.has(normName(prospect) + "|" + date)) return;
+    const ro = rosterFor(setter); const a = ro && ro.show ? ro.show : D.show;
+    const key = "S|" + date + "|" + normName(prospect) + "|" + setter;
+    const L = { id:key, person:setter, role:"Setter", amount:a, dealKey:key, date, week, prospect, offer:String(r["Offer"]||""), cash:0, kind:"show" };
+    lines.push(L); S.showRows.push({ key, date, week, prospect, setter, closer: normName(r["Closer"]), amount:a }); P(setter).roles.Setter = 1;
+  });
+
+  /* Weeks: every Thursday from the earliest deal to the current week */
+  const allDates = S.dealRows.map(d => d.week).concat(S.calls.map(r => String(r["Week (Thu)"]||""))).filter(w => /^\d{4}-\d\d-\d\d$/.test(w));
+  const first = allDates.length ? allDates.reduce((a,b) => a < b ? a : b) : thuWeek(todayISO());
+  const cur = thuWeek(todayISO());
+  S.weeks = []; for(let w = thuWeek(first); w <= cur; w = dayShift(w, 7)) S.weeks.push(w);
+  S.weeks.reverse();
+  if(!S.period || !S.weeks.includes(S.period)) S.period = cur;
+
+  /* Weekly retainers from the Roster (Kaia's DM line), accrued per week from the config date */
+  S.roster.forEach(r => { const name = normName(r["Name"]); const weekly = amt(r["Weekly $"]); if(!name || !weekly) return;
+    const active = r["Active"] === null ? true : truthy(r["Active"]); if(!active) return;
+    S.weeks.filter(w => w >= KAIA_FROM).forEach(w => {
+      const L = { id:"W|" + w + "|" + name, person:name, role:"DM Setter", amount:weekly, dealKey:null, date:w, week:w, prospect:"Weekly DM-setting line", offer:"", cash:0, kind:"weekly" };
+      lines.push(L); P(name).roles["DM Setter"] = 1; }); });
+
+  /* Payouts → which lines are paid. Lines listed in "Deals Covered" are paid outright;
+     payouts with no line list are applied FIFO to that person's oldest unpaid lines. */
+  const byId = {}; lines.forEach(L => { byId[L.id] = L; L.paid = false; L.payout = null; });
+  const live = S.payouts.filter(p => !truthy(p["Voided"]));
+  live.forEach(p => { String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean).forEach(id => { if(byId[id] && !byId[id].paid){ byId[id].paid = true; byId[id].payout = p; } }); });
+  live.filter(p => !has(p["Deals Covered"])).forEach(p => {
+    let left = amt(p["Amount Paid"]); const who = normName(p["Person"]);
+    lines.filter(L => L.person === who && !L.paid).sort((a,b) => a.date < b.date ? -1 : 1).forEach(L => { if(left >= L.amount - 0.005 && L.amount > 0){ left -= L.amount; L.paid = true; L.payout = p; } });
+  });
+
+  lines.forEach(L => P(L.person).lines.push(L));
+  S.lines = lines; S.people = people;
+  S.dealRows.forEach(d => { d.closerPaid = d.lines.some(L => L.role === "Closer" && L.paid); d.setterPaid = d.lines.some(L => L.role === "Setter" && L.paid); });
+
+  /* Review queue */
+  S.reviews = buildReviews();
+}
+
+function personSummary(p){
+  const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid);
+  const owed = unpaid.reduce((s,L) => s + L.amount, 0);
+  const owedPeriod = unpaid.filter(L => L.week === S.period).reduce((s,L) => s + L.amount, 0);
+  const earnedAll = p.lines.reduce((s,L) => s + L.amount, 0);
+  return { owed, owedPeriod, carried: owed - owedPeriod, unpaid, paid, earnedAll, paidAll: paid.reduce((s,L) => s + L.amount, 0) };
+}
+
+/* ---------------- review rules ---------------- */
+function buildReviews(){
+  const out = [], today = todayISO(), cutoff = dayShift(today, -CFG.REVIEW_WINDOW_DAYS);
+  const dismissed = new Set(S.dismissed.map(r => String(r["Notification ID"]||"")));
+  const add = (id, level, ttl, detail, opts) => out.push(Object.assign({ id, level, title:ttl, detail, dismissed: dismissed.has(id) }, opts || {}));
+
+  /* feed health (locked = cannot be dismissed) */
+  if(S.errors.Deals) add("feed|deals-error", "U", "Deals feed unreadable", esc(S.errors.Deals), {locked:true});
+  else if(!S.deals.length) add("feed|deals-empty", "U", "Deals tab is empty", "Open the HQ sheet, click cell A1 on the Deals tab and press <b>Allow access</b> on the IMPORTRANGE prompt. Do the same on Calls, Whop and Whop Payments. Until then nothing below can be computed.", {locked:true});
+  if(!S.errors.Deals && S.deals.length && !S.whop.length) add("feed|whop-empty", "U", "Whop tab is empty", "Whop verification is off. Allow access on the Whop tab's IMPORTRANGE cell, and check the Whop Recon job on the Master Tracker ran.", {locked:true});
+  if(!CFG.WEBAPP) add("cfg|no-webapp", "U", "Write endpoint not configured", "Paid and Dismiss checkboxes will not save. Deploy the Apps Script web app and paste its /exec URL into <span class=\"mono\">CFG.WEBAPP</span> in index.html.", {locked:true});
+  const stamp = whopRefreshed();
+  if(stamp){ const ageH = (Date.now() - stamp.getTime()) / 36e5, lim = cfgNum("Stale feed after (hours)", CFG.DEFAULTS.staleHours);
+    if(ageH > lim) add("feed|whop-stale|" + stamp.toISOString().slice(0,10), "U", "Whop feed is " + Math.round(ageH) + " hours old", "Last refresh " + esc(stamp.toLocaleString()) + ". The daily <span class=\"mono\">runWhopRecon()</span> trigger on the Master Tracker may have died. New payments are not being verified.", {locked:true}); }
+
+  /* Whop payment with no EOC form = unattributed cash (link close) */
+  S.whop.filter(r => /^WHOP ONLY/.test(String(r["Recon Status"])) && String(r["Whop Paid Date"]||"") >= cutoff && !/subscription_cycle/.test(String(r["Whop Billing Reason"]||"")))
+    .forEach(r => { const id = "whop-only|" + String(r["Whop Payment ID"]||r["Whop Email"]||r["Whop Billing Name"]);
+      add(id, "U", money(amt(r["Whop Amount"])) + " paid on Whop with no EOC form", "<b>" + esc(r["Whop Billing Name"]||"") + "</b> (" + esc(r["Whop Email"]||"") + ") paid " + esc(fmtDY(r["Whop Paid Date"])) + ". Nobody earns commission on this until someone files an EOC for it or Maya assigns it by hand. Likely an Amanda or Kaia link close.", {kind:"whop-only"}); });
+
+  /* EOC deal with no Whop payment = commission would be paid on unverified cash */
+  S.dealRows.filter(d => /^EOC ONLY/.test(d.whopStatus) && d.date >= cutoff).forEach(d => {
+    add("eoc-only|" + d.key, "U", money(d.cash) + " logged for " + d.prospect + ", no Whop payment found",
+      esc(title(d.closer)) + " filed an EOC on " + esc(fmtDY(d.date)) + " (" + esc(d.offer) + ", " + esc(d.payType) + "). Whop shows no matching payment. Commission of " + money(d.closerComm + d.setterComm) + " is owed against cash that has not landed. Hold it or confirm the payment came in off-Whop.", {kind:"eoc-only", dealKey:d.key}); });
+
+  /* Refund on a deal */
+  S.dealRows.filter(d => d.refunded > 0).forEach(d => {
+    const paidLines = d.lines.filter(L => L.paid);
+    if(paidLines.length) add("refund-paid|" + d.key + "|" + d.refunded, "U", money(d.refunded) + " refunded on " + d.prospect + ", commission already paid",
+      "Whop refunded " + money(d.refunded) + " of " + money(d.cash) + ". " + esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " already paid out on this deal. No clawback rule exists (Config: <i>Clawback on refund</i>), so nothing is deducted automatically. Decide and log an adjustment in Ledger 2 if needed.", {kind:"refund", dealKey:d.key});
+    else add("refund-unpaid|" + d.key + "|" + d.refunded, "I", money(d.refunded) + " refunded on " + d.prospect + " before payout",
+      "Whop refunded " + money(d.refunded) + " of " + money(d.cash) + " and the commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet. Confirm whether it should still be paid in full.", {kind:"refund", dealKey:d.key}); });
+
+  /* Probable matches: amount + date agree, name does not */
+  S.dealRows.filter(d => /^PROBABLE/.test(d.whopStatus) && d.date >= cutoff).forEach(d => {
+    const w = d.whop || {};
+    add("probable|" + d.key, "I", "Name mismatch: " + d.prospect + " vs " + String(w["Whop Billing Name"]||"?"),
+      "EOC says <b>" + esc(d.prospect) + "</b>, the Whop card says <b>" + esc(w["Whop Billing Name"]||"") + "</b> (" + esc(w["Whop Email"]||"") + "), same amount and day. Probably the same person on someone else's card or a mistyped EOC name. Confirm, then dismiss.", {kind:"probable", dealKey:d.key}); });
+
+  /* Reps not on the roster */
+  Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => {
+    add("roster|" + k, "I", title(k) + " is not on the Roster tab", "Deals name <b>" + esc(title(k)) + "</b> but the Roster has no row for them, so default rates apply (closer " + Math.round(CFG.DEFAULTS.closerRate*100) + "%, setter $" + CFG.DEFAULTS.show + "/$" + CFG.DEFAULTS.close + "). Add a row or fix the spelling on the EOC form.", {kind:"roster"}); });
+
+  /* Assumed rules, one-time */
+  if(S.roster.some(r => amt(r["Weekly $"]) > 0)) add("rule|weekly-assumed", "I", "Weekly DM-setting line is an assumed rule", "Kaia's $" + num(amt((S.roster.find(r => amt(r["Weekly $"]) > 0)||{})["Weekly $"])) + "/week accrues from " + esc(fmtDY(cfgDate("Kaia weekly from", CFG.DEFAULTS.flatFrom))) + " per the Aug 26 meeting, pending Maya's written brief. Dismiss once confirmed, or edit the Roster.", {kind:"rule"});
+
+  const order = { U:0, I:1 };
+  return out.sort((a,b) => (a.locked ? -1 : 0) - (b.locked ? -1 : 0) || order[a.level] - order[b.level]);
+}
+function whopRefreshed(){
+  /* The Whop Payments tab carries "Refreshed 2026-08-28 06:01 PT" in row 1 (a header-row cell). */
+  for(const r of S.whopPay.slice(0,1)){ for(const k of Object.keys(r)){ const m = /Refreshed (\d{4}-\d\d-\d\d) (\d\d:\d\d)/.exec(k + " " + String(r[k]||"")); if(m) return new Date(m[1] + "T" + m[2] + ":00-07:00"); } }
+  for(const k of Object.keys(S.whopPay[0]||{})){ const m = /Refreshed (\d{4}-\d\d-\d\d) (\d\d:\d\d)/.exec(k); if(m) return new Date(m[1] + "T" + m[2] + ":00-07:00"); }
+  return null;
+}
+
+/* ---------------- render ---------------- */
+function renderAll(){
+  const open = S.reviews.filter(r => !r.dismissed);
+  const urgent = open.filter(r => r.level === "U").length;
+  const c = document.getElementById("cnt-pay"); c.hidden = !open.length; c.textContent = open.length; c.classList.toggle("hot", urgent > 0);
+  const c1 = document.getElementById("cnt-l1"); c1.hidden = !S.dealRows.length; c1.textContent = S.dealRows.length;
+  const c2 = document.getElementById("cnt-l2"); c2.hidden = !S.payouts.length; c2.textContent = S.payouts.filter(p => !truthy(p["Voided"])).length;
+  const errs = Object.keys(S.errors);
+  document.getElementById("sf-status").innerHTML = errs.length ? '<span class="dot bad"></span>' + errs.length + ' tab(s) unreadable' : (S.deals.length ? '<span class="dot"></span>Sheet connected' : '<span class="dot warn"></span>Feeds empty');
+  document.getElementById("sf-fetched").textContent = S.fetched ? "Fetched " + S.fetched.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "";
+  document.getElementById("sf-write").innerHTML = CFG.WEBAPP ? '<span class="dot"></span>Writes on' : '<span class="dot bad"></span>Writes off (no endpoint)';
+  document.getElementById("sf-sheet").href = SHEET_URL;
+  showPage(S.page);
+}
+function showPage(p){
+  S.page = p;
+  ["pay","l1","l2"].forEach(k => { document.getElementById("page-" + k).hidden = k !== p; document.getElementById("nav-" + k).setAttribute("aria-current", k === p ? "page" : "false"); });
+  if(p === "pay") renderPay(); if(p === "l1") renderL1(); if(p === "l2") renderL2();
+}
+const cell = (label, val, o) => '<div class="cell ' + ((o && o.tone) || "") + '"><div class="cell-label">' + esc(label) + '</div><div class="cell-body"><div class="cell-val">' + val + '</div>' + (o && o.sub ? '<div class="cell-sub">' + o.sub + '</div>' : '') + '</div></div>';
+const panel = (head, body, right) => '<div class="panel"><div class="panel-head"><span>' + head + '</span>' + (right ? '<span class="r">' + right + '</span>' : '') + '</div>' + body + '</div>';
+function tableInner(heads, rows, o){
+  const left = new Set((o && o.left) || []);
+  return '<table><thead><tr>' + heads.map((h,i) => '<th class="' + (left.has(i) ? "l" : "") + '">' + h + '</th>').join("") + '</tr></thead><tbody>' +
+    (rows.length ? rows.map(r => '<tr>' + r.map((c,i) => '<td class="' + (left.has(i) ? "l" : "") + (c === null ? " mute" : "") + '">' + (c === null ? "—" : c) + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="' + heads.length + '" class="l mute" style="text-align:center;padding:18px">' + esc((o && o.empty) || "Nothing here") + '</td></tr>') + '</tbody></table>';
+}
+const whopPill = d => {
+  if(!S.whop.length) return '<span class="pill">no recon</span>';
+  const st = d.whopStatus;
+  if(/^MATCHED/.test(st)) return '<span class="pill ok">Whop ✓</span>';
+  if(/^PROBABLE/.test(st)) return '<span class="pill chk">probable</span>';
+  if(/^EOC ONLY/.test(st)) return '<span class="pill bad">no payment</span>';
+  if(/^NOT ON WHOP/.test(st)) return '<span class="pill bad">not on Whop</span>';
+  if(/^PENDING/.test(st)) return '<span class="pill chk">pending recon</span>';
+  return '<span class="pill">' + esc(st.slice(0,16) || "?") + '</span>';
+};
+const paidPill = (paid, amount) => amount > 0 ? (paid ? '<span class="pill ok">paid</span>' : '<span class="pill bad">owed</span>') : null;
+
+/* ----- Pay Period ----- */
+function renderPay(){
+  const w = S.period;
+  document.getElementById("pg-title").textContent = "Pay Period";
+  document.getElementById("pg-sub").textContent = w ? wkLabel(w) + (w === thuWeek(todayISO()) ? " · current week" : "") : "";
+  document.getElementById("pg-ctl").innerHTML = '<label class="role" for="wk">Period</label><select id="wk">' + S.weeks.map(x => '<option value="' + x + '"' + (x === w ? ' selected' : '') + '>' + esc(wkLabel(x)) + '</option>').join("") + '</select><button class="btn" id="refresh">Refresh</button>';
+  document.getElementById("wk").onchange = e => { S.period = e.target.value; renderPay(); };
+  document.getElementById("refresh").onclick = () => { toast("Refreshing…"); load().then(() => toast("Up to date")); };
+
+  const dealsW = S.dealRows.filter(d => d.week === w), showsW = S.showRows.filter(s => s.week === w);
+  const linesW = S.lines.filter(L => L.week === w);
+  const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owed > 0.004).sort((a,b) => b.s.owed - a.s.owed);
+  const totalOwed = names.reduce((s,x) => s + x.s.owed, 0);
+  const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
+  const cashW = dealsW.reduce((s,d) => s + d.cash, 0), earnedW = linesW.reduce((s,L) => s + L.amount, 0);
+
+  let h = "";
+  h += panel("This period", '<div class="r4">' +
+    cell("Cash closed", money(cashW), {sub: num(dealsW.length) + " deal" + (dealsW.length === 1 ? "" : "s") + " on the Cash Log"}) +
+    cell("Commission earned", money(earnedW), {sub: num(linesW.length) + " lines · " + num(showsW.length) + " setter show" + (showsW.length === 1 ? "" : "s")}) +
+    cell("Owed to the team", money(totalOwed), {sub: names.length + " " + (names.length === 1 ? "person" : "people") + " · all unpaid, any period", tone: totalOwed > 0 ? "bad" : "good"}) +
+    cell("Needs review", String(open.length), {sub: open.filter(r => r.level === "U").length + " urgent", tone: open.some(r => r.level === "U") ? "bad" : (open.length ? "" : "good")}) + '</div>');
+
+  /* review queue */
+  const qi = r => '<div class="qi' + (r.locked ? ' locked' : '') + '" data-id="' + esc(r.id) + '">' +
+    '<input type="checkbox" aria-label="Dismiss" ' + (r.locked ? 'disabled' : '') + '>' +
+    '<div class="b"><div class="t"><span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>' + esc(r.title) + '</div><div class="d">' + r.detail + '</div></div></div>';
+  h += panel("Needs review", open.length ? '<div class="q" id="queue">' + open.map(qi).join("") + '</div>' : '<div class="empty">Nothing needs a human right now.</div>',
+    (dismissed.length ? '<button class="btn sm" id="show-dismissed" style="background:transparent;color:inherit;border-color:rgba(255,255,255,.35)">' + dismissed.length + ' dismissed</button>' : 'tick to dismiss'));
+
+  /* to be paid */
+  const payRows = names.map(x => { const p = S.people[x.k], s = x.s;
+    return ['<button class="name-btn" data-person="' + esc(x.k) + '">' + esc(title(x.k)) + '</button>',
+      '<span class="role">' + esc(Object.keys(p.roles).join(" + ")) + '</span>',
+      num(s.unpaid.length),
+      s.owedPeriod > 0 ? money(s.owedPeriod) : null,
+      s.carried > 0.004 ? money(s.carried) : null,
+      '<span class="owed">' + money(s.owed) + '</span>',
+      '<input type="checkbox" class="pay-chk" data-person="' + esc(x.k) + '" aria-label="Mark ' + esc(title(x.k)) + ' paid">']; });
+  h += '<div class="panel pay"><div class="panel-head"><span>To be paid</span><span class="r">tick Paid when the money is sent · click a name for the deals</span></div><div class="tw">' +
+    tableInner(["Rep","Role","Lines","This period","Carried over","Owed","Paid?"], payRows, {left:[0,1], empty:"Everyone is paid up."}) + '</div></div>';
+
+  /* transactions this period */
+  const tx = dealsW.slice().sort((a,b) => a.date < b.date ? 1 : -1).map(d => [
+    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), esc(d.payType || "") || null, whopPill(d),
+    isPerson(d.closer) ? esc(title(d.closer)) : null, d.closerComm ? money(d.closerComm) + " " + (paidPill(d.closerPaid, d.closerComm) || "") : null,
+    isPerson(d.setter) ? esc(title(d.setter)) : null, d.setterComm ? money(d.setterComm) + " " + (paidPill(d.setterPaid, d.setterComm) || "") : null,
+    d.dmSetter ? esc(title(d.dmSetter)) : null]);
+  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Cash","Pay type","Whop","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,4,6,8,10], empty:"No deals on the Cash Log for this week yet."}) + '</div>', num(dealsW.length) + " deals · " + money(cashW));
+  if(showsW.length) h += panel("Setter shows without a close · $" + (showsW[0].amount) + " each", '<div class="tw">' + tableInner(["Date","Customer","Setter","Closer on the call","Earned"], showsW.map(s => [esc(fmtD(s.date)), esc(s.prospect), esc(title(s.setter)), isPerson(s.closer) ? esc(title(s.closer)) : null, money(s.amount)]), {left:[1,2,3]}) + '</div>');
+
+  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed</strong> is every unpaid line across all periods, so a rep is never dropped off this list until they are actually paid. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
+    '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for the full amount owed and marks every line in it paid. Ticking a review item hides it for everyone. Both write to the HQ sheet.</p></div>';
+  const pg = document.getElementById("page-pay"); pg.innerHTML = h;
+
+  pg.querySelectorAll(".name-btn").forEach(b => b.onclick = () => openPerson(b.dataset.person));
+  pg.querySelectorAll(".pay-chk").forEach(b => b.onchange = () => { if(b.checked) confirmPayout(b.dataset.person, () => { b.checked = false; }); });
+  pg.querySelectorAll("#queue .qi input").forEach(b => b.onchange = () => { if(b.checked) dismissReview(b.closest(".qi").dataset.id, () => { b.checked = false; }); });
+  const sd = document.getElementById("show-dismissed"); if(sd) sd.onclick = () => openDismissed();
+}
+
+/* ----- Drawer: person ----- */
+function openDrawer(ttl, sub, body, foot){
+  document.getElementById("dr-title").textContent = ttl; document.getElementById("dr-sub").innerHTML = sub;
+  document.getElementById("dr-body").innerHTML = body; document.getElementById("dr-foot").innerHTML = foot || "";
+  document.getElementById("drawer").classList.add("on"); document.getElementById("drawer").setAttribute("aria-hidden","false"); document.getElementById("scrim").classList.add("on");
+}
+function closeDrawer(){ document.getElementById("drawer").classList.remove("on"); document.getElementById("drawer").setAttribute("aria-hidden","true"); document.getElementById("scrim").classList.remove("on"); }
+function lineRow(L){
+  const d = L.dealKey ? S.dealRows.find(x => x.key === L.dealKey) : null;
+  const kind = { close:"Closed", "set-close":"Set · closed", "set-pct":"Set (5%)", show:"Set · call held", weekly:"Weekly" }[L.kind] || L.kind;
+  return [esc(fmtD(L.date)), esc(L.prospect), esc(L.offer || "") || null, L.cash ? money(L.cash) : null, esc(kind), d ? whopPill(d) : null, money(L.amount)];
+}
+function openPerson(k){
+  const p = S.people[k]; if(!p) return; const s = personSummary(p);
+  const unpaid = s.unpaid.slice().sort((a,b) => a.date < b.date ? 1 : -1), paid = s.paid.slice().sort((a,b) => a.date < b.date ? 1 : -1);
+  const heads = ["Date","Customer","Offer","Deal","Role on deal","Whop","Commission"];
+  let body = '<div class="sec">Owed · ' + unpaid.length + ' line' + (unpaid.length === 1 ? "" : "s") + ' · ' + money(s.owed) + '</div><div class="tw">' + tableInner(heads, unpaid.map(lineRow), {left:[1,2,4], empty:"Nothing owed."}) + '</div>';
+  if(paid.length) body += '<div class="sec" style="margin-top:14px">Paid · ' + paid.length + ' line' + (paid.length === 1 ? "" : "s") + ' · ' + money(s.paidAll) + '</div><div class="tw">' + tableInner(heads.concat(["Payout"]), paid.map(L => lineRow(L).concat([esc(fmtD(L.payout ? L.payout["Date Paid"] : "")) + ' <span class="mute">' + esc(String(L.payout ? L.payout["Payout ID"] : "")) + '</span>'])), {left:[1,2,4]}) + '</div>';
+  if(p.roster && p.roster.notes) body += '<div class="sec" style="margin-top:14px">Roster note</div><div style="padding:0 20px 16px;font-size:12.5px;color:var(--ink-2)">' + esc(p.roster.notes) + '</div>';
+  openDrawer(title(k), esc(Object.keys(p.roles).join(" + ")) + (p.roster ? "" : ' · <span class="pill chk">not on roster</span>') + ' · earned ' + money(s.earnedAll) + ' all time',
+    body, s.owed > 0.004 ? '<span style="font-size:13px">Owed now <b style="font-family:var(--mono)">' + money(s.owed) + '</b></span><button class="btn primary" id="dr-pay">Mark paid ' + money(s.owed) + '</button>' : '<span class="pill ok">Paid up</span>');
+  const b = document.getElementById("dr-pay"); if(b) b.onclick = () => confirmPayout(k);
+}
+function openDismissed(){
+  const rows = S.reviews.filter(r => r.dismissed).map(r => { const d = S.dismissed.find(x => String(x["Notification ID"]) === r.id) || {};
+    return ['<span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>', esc(r.title), esc(fmtD(d["Dismissed At"])) + (has(d["Dismissed By"]) ? ' <span class="mute">' + esc(d["Dismissed By"]) + '</span>' : ''), '<button class="btn sm restore" data-id="' + esc(r.id) + '">Restore</button>']; });
+  openDrawer("Dismissed", rows.length + " item" + (rows.length === 1 ? "" : "s") + " hidden from the review queue", '<div class="tw">' + tableInner(["","Item","Dismissed",""], rows, {left:[0,1,2]}) + '</div>');
+  document.querySelectorAll(".restore").forEach(b => b.onclick = () => writeAction({action:"undismiss", id:b.dataset.id}, "Restored").then(() => { closeDrawer(); }));
+}
+
+/* ----- Ledger 1: deals ----- */
+const L1 = { q:"", person:"", offer:"", sort:"date", dir:"desc" };
+function renderL1(){
+  document.getElementById("pg-title").textContent = "Ledger 1 · Deals";
+  document.getElementById("pg-sub").textContent = "Every closed deal on the Cash Log since " + (S.dealRows.length ? fmtDY(S.dealRows.map(d => d.date).sort()[0]) : "—") + ", joined to Whop";
+  document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv1">Download CSV</button>';
+  const people = Object.keys(S.people).sort(), offers = [...new Set(S.dealRows.map(d => d.offer).filter(Boolean))].sort();
+  let rows = S.dealRows.filter(d => (!L1.person || d.closer === L1.person || d.setter === L1.person) && (!L1.offer || d.offer === L1.offer) && (!L1.q || (d.prospect + " " + d.closer + " " + d.setter + " " + d.whopStatus + " " + (d.whop ? d.whop["Whop Email"] : "")).toLowerCase().includes(L1.q.toLowerCase())));
+  const keyf = { date:d => d.date, prospect:d => d.prospect.toLowerCase(), cash:d => d.cash, closer:d => d.closer, setter:d => d.setter, offer:d => d.offer }[L1.sort] || (d => d.date);
+  rows.sort((a,b) => { const x = keyf(a), y = keyf(b); return (x < y ? -1 : x > y ? 1 : 0) * (L1.dir === "asc" ? 1 : -1); });
+  const total = rows.reduce((s,d) => s + d.cash, 0);
+  const th = (label, key, left) => '<th class="sort ' + (left ? "l" : "") + '" data-key="' + key + '"' + (L1.sort === key ? ' data-dir="' + L1.dir + '"' : '') + '>' + label + '</th>';
+  let h = '<div class="panel"><div class="panel-head"><span>Deals</span><span class="r">' + num(rows.length) + ' of ' + num(S.dealRows.length) + ' · ' + money(total) + '</span></div>' +
+    '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email" value="' + esc(L1.q) + '">' +
+    '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select>' +
+    '<select id="f-offer"><option value="">All offers</option>' + offers.map(o => '<option value="' + esc(o) + '"' + (L1.offer === o ? ' selected' : '') + '>' + esc(o) + '</option>').join("") + '</select></div>' +
+    '<div class="tw"><table><thead><tr>' + th("Date","date") + '<th>Week</th>' + th("Customer","prospect",1) + th("Offer","offer",1) + th("Cash","cash") + '<th>Contracted</th><th class="l">Pay type</th><th>Whop</th><th>Whop paid</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
+    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(fmtD(d.week)), esc(d.prospect), esc(d.offer), money(d.cash), d.revenue ? money(d.revenue) : "—", esc(d.payType) || "—", whopPill(d), d.whop && has(d.whop["Whop Paid Date"]) ? esc(fmtD(d.whop["Whop Paid Date"])) : "—",
+      isPerson(d.closer) ? esc(title(d.closer)) : "—", d.closerComm ? money(d.closerComm) : "—", paidPill(d.closerPaid, d.closerComm) || "—",
+      isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—", d.dmSetter ? esc(title(d.dmSetter)) : "—"]
+      .map((c,i) => '<td class="' + ([2,3,6,9,12,15].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="16" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
+    '</tbody></table></div></div>';
+  h += '<div class="note"><p><strong>Whop</strong> column: <span class="pill ok">Whop ✓</span> matched a real payment on amount, date and name · <span class="pill chk">probable</span> amount and date matched, name did not · <span class="pill bad">no payment</span> a form was filed and no money landed. Installment payments on plans are never commissionable and are not shown here. Refunds surface in the review queue.</p></div>';
+  const pg = document.getElementById("page-l1"); pg.innerHTML = h;
+  document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); document.getElementById("f-q").focus(); const i = document.getElementById("f-q"); i.setSelectionRange(i.value.length, i.value.length); };
+  document.getElementById("f-person").onchange = e => { L1.person = e.target.value; renderL1(); };
+  document.getElementById("f-offer").onchange = e => { L1.offer = e.target.value; renderL1(); };
+  pg.querySelectorAll("th.sort").forEach(t => t.onclick = () => { const k = t.dataset.key; if(L1.sort === k) L1.dir = L1.dir === "asc" ? "desc" : "asc"; else { L1.sort = k; L1.dir = k === "date" || k === "cash" ? "desc" : "asc"; } renderL1(); });
+  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Week (Thu)","Customer","Offer","Cash","Contracted","Pay type","Whop status","Whop paid","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.week, d.prospect, d.offer, d.cash, d.revenue, d.payType, d.whopStatus, d.whop ? d.whop["Whop Paid Date"] : "", title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
+}
+
+/* ----- Ledger 2: payouts ----- */
+function renderL2(){
+  document.getElementById("pg-title").textContent = "Ledger 2 · Payouts";
+  const live = S.payouts.filter(p => !truthy(p["Voided"])), voided = S.payouts.filter(p => truthy(p["Voided"]));
+  const total = live.reduce((s,p) => s + amt(p["Amount Paid"]), 0);
+  document.getElementById("pg-sub").textContent = num(live.length) + " payout" + (live.length === 1 ? "" : "s") + " · " + money(total) + " sent to the sales team" + (voided.length ? " · " + voided.length + " voided" : "");
+  document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv2">Download CSV</button>';
+  const byPerson = {}; live.forEach(p => { const k = normName(p["Person"]); byPerson[k] = (byPerson[k] || 0) + amt(p["Amount Paid"]); });
+  let h = '';
+  const names = Object.keys(byPerson).sort((a,b) => byPerson[b] - byPerson[a]);
+  if(names.length) h += panel("Paid to date", '<div class="r4">' + names.slice(0,4).map(k => cell(title(k), money(byPerson[k]), {sub: live.filter(p => normName(p["Person"]) === k).length + " payouts"})).join("") + '</div>');
+  const rows = S.payouts.slice().sort((a,b) => String(a["Logged At"]||a["Date Paid"]) < String(b["Logged At"]||b["Date Paid"]) ? 1 : -1).map(p => {
+    const ids = String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean); const v = truthy(p["Voided"]);
+    const names = ids.map(id => (S.lines.find(L => L.id === id) || {}).prospect).filter(Boolean);
+    return [esc(fmtDY(p["Date Paid"])), esc(title(p["Person"])), esc(p["Role"] || "") || null, (v ? '<s>' : '') + money(amt(p["Amount Paid"])) + (v ? '</s>' : ''), has(p["Period (Thu)"]) ? esc(fmtD(p["Period (Thu)"])) : null,
+      ids.length ? '<button class="name-btn lines-btn" data-id="' + esc(p["Payout ID"]) + '">' + ids.length + ' line' + (ids.length === 1 ? "" : "s") + '</button>' : '<span class="mute">FIFO</span>',
+      names.length ? esc(names.slice(0,3).join(", ")) + (names.length > 3 ? " +" + (names.length - 3) : "") : null,
+      esc(p["Paid By"] || "") || null, esc(p["Notes"] || "") || null, '<span class="mute">' + esc(p["Payout ID"]) + '</span>',
+      v ? '<span class="pill bad">voided</span>' : '<button class="btn sm danger void-btn" data-id="' + esc(p["Payout ID"]) + '">Void</button>']; });
+  h += panel("Payouts", '<div class="tw">' + tableInner(["Paid","Rep","Role","Amount","Period","Lines","Deals","Paid by","Notes","ID",""], rows, {left:[1,2,6,7,8,9], empty:"No payouts logged yet. Tick Paid on the Pay Period page and the first one lands here."}) + '</div>', "newest first");
+  h += '<div class="note"><p><strong>Ledger 2 is the record of money actually sent.</strong> Each row is written when someone ticks Paid, and lists the exact commission lines it covered. <strong>Void</strong> keeps the row but un-marks its lines, so the amount goes back to owed. Nothing here is ever deleted.</p></div>';
+  const pg = document.getElementById("page-l2"); pg.innerHTML = h;
+  pg.querySelectorAll(".lines-btn").forEach(b => b.onclick = () => openPayout(b.dataset.id));
+  pg.querySelectorAll(".void-btn").forEach(b => b.onclick = () => confirmVoid(b.dataset.id));
+  document.getElementById("csv2").onclick = () => downloadCSV("sca-payouts-" + todayISO() + ".csv", [["Payout ID","Date Paid","Person","Role","Amount Paid","Period (Thu)","Deals Covered","Paid By","Notes","Voided"]].concat(S.payouts.map(p => ["Payout ID","Date Paid","Person","Role","Amount Paid","Period (Thu)","Deals Covered","Paid By","Notes","Voided"].map(k => p[k] ?? ""))));
+}
+function openPayout(id){
+  const p = S.payouts.find(x => String(x["Payout ID"]) === id); if(!p) return;
+  const ids = String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean);
+  const ls = ids.map(i => S.lines.find(L => L.id === i)).filter(Boolean);
+  openDrawer(title(p["Person"]) + " · " + money(amt(p["Amount Paid"])), "Paid " + esc(fmtDY(p["Date Paid"])) + (has(p["Paid By"]) ? " by " + esc(p["Paid By"]) : "") + ' · <span class="mute">' + esc(id) + '</span>',
+    '<div class="tw">' + tableInner(["Date","Customer","Offer","Deal","Role on deal","Whop","Commission"], ls.map(lineRow), {left:[1,2,4]}) + '</div>' + (ids.length !== ls.length ? '<div class="empty">' + (ids.length - ls.length) + ' line id(s) on this payout no longer match a deal (the Cash Log row changed).</div>' : ''));
+}
+
+/* ---------------- writes ---------------- */
+function modal(ttl, body, okLabel, onOk){
+  document.getElementById("md-title").textContent = ttl; document.getElementById("md-body").innerHTML = body;
+  const ok = document.getElementById("md-ok"); ok.textContent = okLabel; ok.disabled = false;
+  const m = document.getElementById("modal"); m.classList.add("on");
+  const close = () => { m.classList.remove("on"); ok.onclick = null; };
+  document.getElementById("md-cancel").onclick = () => { close(); if(onOk.cancel) onOk.cancel(); };
+  ok.onclick = async () => { ok.disabled = true; try { await onOk(); close(); } catch(e){ ok.disabled = false; const er = document.getElementById("md-err"); if(er){ er.hidden = false; er.textContent = e.message; } } };
+  const f = m.querySelector("input,textarea"); if(f) f.focus();
+}
+function confirmPayout(k, onCancel){
+  const p = S.people[k]; const s = personSummary(p);
+  if(s.owed <= 0.004){ toast(title(k) + " is paid up."); if(onCancel) onCancel(); return; }
+  const by = localStorage.getItem("hq.paidBy") || "";
+  const fn = async () => {
+    const paidBy = document.getElementById("md-by").value.trim(), notes = document.getElementById("md-notes").value.trim(), date = document.getElementById("md-date").value;
+    if(!paidBy) throw new Error("Who sent it? Put a name in Paid by.");
+    if(!/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error("Date needs to be YYYY-MM-DD.");
+    localStorage.setItem("hq.paidBy", paidBy);
+    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owed*100)/100, period:S.period, datePaid:date, lines:s.unpaid.map(L => L.id), paidBy, notes }, "Logged " + money(s.owed) + " to " + title(k));
+    closeDrawer();
+  }; fn.cancel = onCancel;
+  modal("Mark " + title(k) + " paid", '<div class="kv"><b>Amount</b><span style="font-family:var(--mono);font-weight:600">' + money(s.owed) + '</span><b>Covers</b><span>' + s.unpaid.length + ' line' + (s.unpaid.length === 1 ? "" : "s") + (s.carried > 0.004 ? ' (' + money(s.carried) + ' carried from earlier periods)' : '') + '</span></div>' +
+    '<label>Date paid<input type="text" id="md-date" value="' + todayISO() + '"></label><label>Paid by<input type="text" id="md-by" value="' + esc(by) + '" placeholder="Your name"></label><label>Note (optional)<input type="text" id="md-notes" placeholder="Gusto, Zelle, partial, etc."></label><div class="err" id="md-err" hidden></div>' +
+    '<div style="font-size:12px;color:var(--ink-3)">This writes one row to Ledger 2 and marks every line above as paid. Void it from Ledger 2 if it was a mistake.</div>', "Log payout", fn);
+}
+function dismissReview(id, onCancel){
+  const r = S.reviews.find(x => x.id === id); if(!r) return;
+  const by = localStorage.getItem("hq.paidBy") || "";
+  const fn = async () => { const who = document.getElementById("md-by").value.trim(); if(!who) throw new Error("Put your name so the team knows who cleared it."); localStorage.setItem("hq.paidBy", who);
+    await writeAction({ action:"dismiss", id, title:r.title, by:who, note:document.getElementById("md-notes").value.trim() }, "Dismissed"); };
+  fn.cancel = onCancel;
+  modal("Dismiss this item", '<div style="font-weight:600;color:var(--ink)">' + esc(r.title) + '</div><label>Your name<input type="text" id="md-by" value="' + esc(by) + '"></label><label>What was done (optional)<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">Hides it for everyone. Restore from the “dismissed” button on the review panel.</div>', "Dismiss", fn);
+}
+function confirmVoid(id){
+  const p = S.payouts.find(x => String(x["Payout ID"]) === id); if(!p) return;
+  const fn = async () => { const who = document.getElementById("md-by").value.trim(); if(!who) throw new Error("Put your name."); localStorage.setItem("hq.paidBy", who);
+    await writeAction({ action:"void", id, by:who, note:document.getElementById("md-notes").value.trim() }, "Voided " + id); };
+  modal("Void payout " + id, '<div class="kv"><b>Rep</b><span>' + esc(title(p["Person"])) + '</span><b>Amount</b><span style="font-family:var(--mono)">' + money(amt(p["Amount Paid"])) + '</span></div><label>Your name<input type="text" id="md-by" value="' + esc(localStorage.getItem("hq.paidBy") || "") + '"></label><label>Why<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">The row stays in Ledger 2 marked voided; its lines go back to owed.</div>', "Void", fn);
+}
+async function writeAction(payload, okMsg){
+  if(!CFG.WEBAPP) throw new Error("No write endpoint configured (CFG.WEBAPP). Nothing was saved.");
+  if(!S.token) throw new Error("Missing passphrase. Reload and enter it.");
+  const body = JSON.stringify(Object.assign({ token:S.token, client:"hq-web" }, payload));
+  let res, txt;
+  try { res = await fetch(CFG.WEBAPP, { method:"POST", body, headers:{ "Content-Type":"text/plain;charset=utf-8" }, redirect:"follow" }); txt = await res.text(); }
+  catch(e){ throw new Error("Could not reach the write endpoint: " + e.message); }
+  let j; try { j = JSON.parse(txt); } catch(e){ throw new Error("Write endpoint returned something that is not JSON (HTTP " + res.status + "). Is the deployment set to Anyone?"); }
+  if(!j.ok) throw new Error(j.error || "Write failed");
+  toast(okMsg + " · syncing…");
+  /* the sheet write is synchronous on the server; re-read to render the truth, not an optimistic guess */
+  await load();
+  toast(okMsg);
+  return j;
+}
+
+/* ---------------- utils ---------------- */
+let toastT; function toast(msg){ const t = document.getElementById("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 2600); }
+function downloadCSV(name, rows){
+  const csv = rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }).join(",")).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+async function sha256(s){ const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join(""); }
+
+/* ---------------- boot ---------------- */
+document.getElementById("gate-form").onsubmit = async e => {
+  e.preventDefault();
+  const pw = document.getElementById("gate-pw").value;
+  const ok = CFG.PASS_HASH === "__PASS_HASH__" || (await sha256(pw)) === CFG.PASS_HASH;
+  if(!ok){ document.getElementById("gate-err").hidden = false; return; }
+  S.token = pw; try { sessionStorage.setItem("hq.tok", pw); } catch(_){}
+  enter();
+};
+function enter(){
+  document.getElementById("gate").remove(); document.getElementById("shell").hidden = false;
+  document.querySelectorAll(".nav button").forEach(b => b.onclick = () => showPage(b.dataset.page));
+  document.getElementById("dr-close").onclick = closeDrawer; document.getElementById("scrim").onclick = closeDrawer;
+  document.addEventListener("keydown", e => { if(e.key === "Escape"){ closeDrawer(); document.getElementById("modal").classList.remove("on"); } });
+  document.getElementById("page-pay").innerHTML = '<div class="panel"><div class="panel-head">Loading</div><div style="padding:16px;display:flex;flex-direction:column;gap:10px"><div class="skel" style="width:60%"></div><div class="skel" style="width:40%"></div><div class="skel" style="width:75%"></div></div></div>';
+  load().catch(e => { document.getElementById("page-pay").innerHTML = '<div class="note crit"><p><strong>Could not load the sheet.</strong> ' + esc(e.message) + '</p></div>'; });
+  setInterval(() => { if(document.visibilityState === "visible") load().catch(() => {}); }, 10 * 60 * 1000);
+}
+(function(){ let t = ""; try { t = sessionStorage.getItem("hq.tok") || ""; } catch(_){}
+  if(t && CFG.PASS_HASH !== "__PASS_HASH__"){ sha256(t).then(h => { if(h === CFG.PASS_HASH){ S.token = t; enter(); } }); }
+  else if(CFG.PASS_HASH === "__PASS_HASH__"){ S.token = t; enter(); } })();
+</script>
+</body>
+</html>
