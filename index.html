@@ -198,17 +198,7 @@ th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{c
 </head>
 <body>
 
-<div class="gate" id="gate">
-  <form class="box" id="gate-form" autocomplete="off">
-    <h1>SCA Commission HQ</h1>
-    <p>Team passphrase to continue.</p>
-    <input type="password" id="gate-pw" placeholder="Passphrase" aria-label="Passphrase" autofocus>
-    <div class="err" id="gate-err" hidden>That is not it.</div>
-    <button class="btn primary" type="submit">Open</button>
-  </form>
-</div>
-
-<div class="shell" id="shell" hidden>
+<div class="shell" id="shell">
   <aside class="side">
     <div class="brand">
       <div class="k">She Creates Academy</div>
@@ -610,12 +600,6 @@ function buildReviews(){
   Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => {
     add("roster|" + k, "I", title(k) + " is not on the Roster tab", "Deals name <b>" + esc(title(k)) + "</b> but the Roster has no row for them, so default rates apply (closer " + Math.round(CFG.DEFAULTS.closerRate*100) + "%, setter $" + CFG.DEFAULTS.show + "/$" + CFG.DEFAULTS.close + "). Add a row or fix the spelling on the EOC form.", {kind:"roster"}); });
 
-  /* Maya's tracker names a different rep than the EOC form */
-  S.maya.rows.filter(r => r.matched && r.matched.kind === "deal" && r.matched.deal.source !== "maya" && r.date >= cutoff).forEach(r => { const d = r.matched.deal; const iss = [];
-    if(r.closer && r.closer !== "UNSURE" && r.closer !== d.closer) iss.push("closer " + title(r.closer) + " on Maya's sheet vs " + title(d.closer) + " on the EOC");
-    if(r.setter && !/UNSURE|^NO$/.test(r.setter) && isPerson(d.setter) && r.setter !== d.setter) iss.push("setter " + title(r.setter) + " on Maya's sheet vs " + title(d.setter) + " on the EOC");
-    if(iss.length) add("maya-diff|" + d.key, "U", "Who gets paid on " + d.prospect + "?", esc(iss.join("; ")) + ". The dashboard is paying the EOC name. Confirm and fix the wrong sheet, then dismiss.", {kind:"maya-diff", dealKey:d.key}); });
-
   /* Payment plan looks late: balance left and no payment in 35 days */
   S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > cfgNum("Late plan after (days)", CFG.DEFAULTS.lateDays)).forEach(d => {
     add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", "Last payment " + esc(fmtDY(d.lastPayment)) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.revenue) + ", " + money(d.remaining) + " remaining. Closer " + esc(title(d.closer)) + " has been paid on the cash so far only.", {kind:"late", dealKey:d.key}); });
@@ -907,7 +891,7 @@ function confirmVoid(id){
 }
 async function writeAction(payload, okMsg){
   if(!CFG.WEBAPP) throw new Error("No write endpoint configured (CFG.WEBAPP). Nothing was saved.");
-  if(!S.token) throw new Error("Missing passphrase. Reload and enter it.");
+  if(!(await ensureToken())) throw new Error("No write key entered. Nothing was saved.");
   const body = JSON.stringify(Object.assign({ token:S.token, client:"hq-web" }, payload));
   let res, txt;
   try { res = await fetch(CFG.WEBAPP, { method:"POST", body, headers:{ "Content-Type":"text/plain;charset=utf-8" }, redirect:"follow" }); txt = await res.text(); }
@@ -930,16 +914,7 @@ function downloadCSV(name, rows){
 async function sha256(s){ const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join(""); }
 
 /* ---------------- boot ---------------- */
-document.getElementById("gate-form").onsubmit = async e => {
-  e.preventDefault();
-  const pw = document.getElementById("gate-pw").value;
-  const ok = CFG.PASS_HASH === "__PASS_HASH__" || (await sha256(pw)) === CFG.PASS_HASH;
-  if(!ok){ document.getElementById("gate-err").hidden = false; return; }
-  S.token = pw; try { sessionStorage.setItem("hq.tok", pw); } catch(_){}
-  enter();
-};
 function enter(){
-  document.getElementById("gate").remove(); document.getElementById("shell").hidden = false;
   document.querySelectorAll(".nav button").forEach(b => b.onclick = () => showPage(b.dataset.page));
   document.getElementById("dr-close").onclick = closeDrawer; document.getElementById("scrim").onclick = closeDrawer;
   document.addEventListener("keydown", e => { if(e.key === "Escape"){ closeDrawer(); document.getElementById("modal").classList.remove("on"); } });
@@ -947,9 +922,15 @@ function enter(){
   load().catch(e => { document.getElementById("page-pay").innerHTML = '<div class="note crit"><p><strong>Could not load the sheet.</strong> ' + esc(e.message) + '</p></div>'; });
   setInterval(() => { if(document.visibilityState === "visible") load().catch(() => {}); }, 10 * 60 * 1000);
 }
-(function(){ let t = ""; try { t = sessionStorage.getItem("hq.tok") || ""; } catch(_){}
-  if(t && CFG.PASS_HASH !== "__PASS_HASH__"){ sha256(t).then(h => { if(h === CFG.PASS_HASH){ S.token = t; enter(); } }); }
-  else if(CFG.PASS_HASH === "__PASS_HASH__"){ S.token = t; enter(); } })();
+/* The write key (same value as HQ_TOKEN in the Apps Script) is asked for once per browser, the first time someone ticks a box. */
+async function ensureToken(){
+  if(S.token) return true;
+  let t = ""; try { t = localStorage.getItem("hq.tok") || ""; } catch(_){}
+  if(!t){ t = window.prompt("Team write key (ask Patrick or Maya). Needed once on this browser to log payouts and dismiss items.") || ""; t = t.trim(); if(!t) return false; }
+  if(CFG.PASS_HASH !== "__PASS_HASH__" && (await sha256(t)) !== CFG.PASS_HASH){ try { localStorage.removeItem("hq.tok"); } catch(_){} toast("That write key is not right."); return false; }
+  S.token = t; try { localStorage.setItem("hq.tok", t); } catch(_){} return true;
+}
+enter();
 </script>
 </body>
 </html>
