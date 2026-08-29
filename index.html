@@ -389,7 +389,7 @@ function parseMaya(rows){
 const squash = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
 function nameLike(a, b){ const A = squash(a), B = squash(b); if(!A || !B) return false; if(A === B) return true;
   const fa = squash(String(a).trim().split(/\s+/)[0]), fb = squash(String(b).trim().split(/\s+/)[0]);
-  return (A.length >= 4 && (B.startsWith(A) || A.startsWith(B))) || (fa.length >= 4 && fa === fb); }
+  return (A.length >= 3 && (B.startsWith(A) || A.startsWith(B))) || (fa.length >= 3 && fa === fb); }
 
 /* ---------------- model ---------------- */
 function cfgNum(key, dflt){ const v = S.config[key]; const x = typeof v === "number" ? v : parseFloat(String(v||"")); return isFinite(x) ? x : dflt; }
@@ -505,16 +505,6 @@ function compute(){
       const L = { id:"W|" + w + "|" + name, person:name, role:"DM Setter", amount:weekly, dealKey:null, date:w, week:w, prospect:"Weekly DM-setting line", offer:"", cash:0, kind:"weekly" };
       lines.push(L); P(name).roles["DM Setter"] = 1; }); });
 
-  /* Payouts → which lines are paid. Lines listed in "Deals Covered" are paid outright;
-     payouts with no line list are applied FIFO to that person's oldest unpaid lines. */
-  const byId = {}; lines.forEach(L => { byId[L.id] = L; L.paid = false; L.payout = null; });
-  const live = S.payouts.filter(p => !truthy(p["Voided"]));
-  live.forEach(p => { String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean).forEach(id => { if(byId[id] && !byId[id].paid){ byId[id].paid = true; byId[id].payout = p; } }); });
-  live.filter(p => !has(p["Deals Covered"])).forEach(p => {
-    let left = amt(p["Amount Paid"]); const who = normName(p["Person"]);
-    lines.filter(L => L.person === who && !L.paid).sort((a,b) => a.date < b.date ? -1 : 1).forEach(L => { if(left >= L.amount - 0.005 && L.amount > 0){ left -= L.amount; L.paid = true; L.payout = p; } });
-  });
-
   /* Maya's tracker: match each of her rows to a deal or an installment line */
   const dealFor = row => S.dealRows.find(d => {
     const w = d.whop || {};
@@ -524,12 +514,45 @@ function compute(){
   const instFor = row => lines.find(L => L.kind === "installment" && Math.abs(L.cash - row.cash) < 1 && nameLike(row.name, L.prospect) && Math.abs(daysBetween(L.date, row.date)) <= 10);
   S.maya.rows.forEach(row => { const I = instFor(row); if(I && !I.maya){ row.matched = { kind:"installment", line:I }; I.maya = row; return; }
     const d = dealFor(row); if(d && !d.maya){ row.matched = { kind:"deal", deal:d }; d.maya = row; } });
+  /* Maya's tracker names a closer for money the Cash Log never saw (link closes, legacy installments): her row is the source */
+  S.maya.rows.filter(r => !r.matched && r.cash > 0 && isPerson(r.closer) && r.closer !== "UNSURE").forEach(r => {
+    const closer = r.closer, setter = (isPerson(r.setter) && r.setter !== "UNSURE") ? r.setter : "";
+    const key = "M|" + r.date + "|" + normName(r.name) + "|" + closer, week = thuWeek(r.date), flat = week >= FLAT_FROM;
+    /* verify against Whop: an orphan installment or a Whop-only recon row with the same amount and a similar name */
+    let status = "NOT ON WHOP", w = null;
+    const oc = (S.orphanCycles || []).find(c => !c.used && Math.abs(c.amount - r.cash) < 1 && (nameLike(r.name, c.name) || (r.email && r.email === c.email)) && Math.abs(daysBetween(c.date, r.date)) <= 10);
+    if(oc){ oc.used = true; status = "MATCHED"; }
+    else { w = S.whop.find(x => !x.used && /^WHOP ONLY/.test(String(x["Recon Status"])) && Math.abs(amt(x["Whop Amount"]) - r.cash) < 1 && (nameLike(r.name, x["Whop Billing Name"]) || nameLike(r.name, x["Whop Enrollment Name"]) || nameLike(r.name, String(x["Whop Email"]||"").split("@")[0]) || (r.email && r.email === String(x["Whop Email"]||"").toLowerCase())));
+      if(w){ w.used = true; status = "MATCHED"; } }
+    const isInst = r.isInstallment || /installment/i.test(r.plan);
+    const d = { i:-1, key, date:r.date, week, prospect:r.name, closer, setter, offer: isInst ? "Installment" : (/lite|497|starter/i.test(r.offer) || r.cash === 497 ? "$497 Starter" : "$3K Strategy"), payType: isInst ? "Plan" : (/plan/i.test(r.plan) ? "Plan" : "PIF"),
+      cash:r.cash, revenue:r.cash, collected:r.cash, remaining:0, lastPayment: w ? String(w["Whop Paid Date"]||"") : (oc ? oc.date : ""), installments:0, email:r.email, flat, whop:w, whopStatus:status, refunded: w ? amt(w["Whop Refunded"]) : 0,
+      closerComm:0, setterComm:0, dmSetter: closer === "KAIA" ? "KAIA" : "", lines:[], maya:r, source:"maya" };
+    r.matched = { kind:"deal", deal:d };
+    const ro = rosterFor(closer); const rate = ro && ro.closerRate ? ro.closerRate : D.closerRate;
+    d.closerComm = Math.round(r.cash * rate * 100) / 100;
+    const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind: isInst ? "installment" : "close" };
+    lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
+    if(setter && !isInst){ d.setterComm = flat ? (rosterFor(setter) && rosterFor(setter).close || D.close) : Math.round(r.cash * SETTER_BEFORE * 100) / 100;
+      const SL = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind: flat ? "set-close" : "set-pct" }; lines.push(SL); d.lines.push(SL); P(setter).roles.Setter = 1; }
+    if(TEAM_RATE > 0){ const t = Math.round(r.cash * TEAM_RATE * 100) / 100;
+      if(TEAM_TO){ const TL = { id:key+"|T", person:TEAM_TO, role:"Team", amount:t, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind:"team" }; lines.push(TL); d.lines.push(TL); }
+      else S.teamUnassigned.push({ date:r.date, amount:t, prospect:r.name }); }
+    S.dealRows.push(d); });
+
   /* A block Maya marked "Wire Transfer Sent" pays every line dated inside it */
   S.maya.blocks.filter(b => b.wireSent && b.from && b.to).forEach(b => {
     lines.filter(L => !L.paid && L.date >= b.from && L.date <= b.to).forEach(L => { L.paid = true; L.payout = { "Payout ID":"Maya wire", "Date Paid": b.wireDate || b.to, "Paid By":"Maya", source:"maya" }; }); });
-  /* Pre-flat setter 5% is only owed once Maya's row says Triage Completed = Yes */
-  lines.filter(L => L.kind === "set-pct" && !L.paid).forEach(L => { const d = S.dealRows.find(x => x.key === L.dealKey); const m = d && d.maya;
-    if(m && /^yes$/i.test(m.triage)) return; L.held = m ? "triage " + (m.triage || "blank") + " on Maya's tracker" : "not on Maya's tracker"; });
+
+  /* Payouts → which lines are paid. Lines listed in "Deals Covered" are paid outright;
+     payouts with no line list are applied FIFO to that person's oldest unpaid lines. */
+  const byId = {}; lines.forEach(L => { byId[L.id] = L; if(!L.paid){ L.paid = false; L.payout = null; } });
+  const live = S.payouts.filter(p => !truthy(p["Voided"]));
+  live.forEach(p => { String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean).forEach(id => { if(byId[id] && !byId[id].paid){ byId[id].paid = true; byId[id].payout = p; } }); });
+  live.filter(p => !has(p["Deals Covered"])).forEach(p => {
+    let left = amt(p["Amount Paid"]); const who = normName(p["Person"]);
+    lines.filter(L => L.person === who && !L.paid).sort((a,b) => a.date < b.date ? -1 : 1).forEach(L => { if(left >= L.amount - 0.005 && L.amount > 0){ left -= L.amount; L.paid = true; L.payout = p; } });
+  });
 
   lines.forEach(L => P(L.person).lines.push(L));
   S.lines = lines; S.people = people;
@@ -540,7 +563,7 @@ function compute(){
 }
 
 function personSummary(p){
-  const unpaid = p.lines.filter(L => !L.paid && !L.held), paid = p.lines.filter(L => L.paid), held = p.lines.filter(L => L.held && !L.paid);
+  const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid), held = [];
   const owed = unpaid.reduce((s,L) => s + L.amount, 0);
   const periodLines = unpaid.filter(L => inRange(L.date)), outside = unpaid.filter(L => !inRange(L.date));
   const owedPeriod = periodLines.reduce((s,L) => s + L.amount, 0), owedOutside = outside.reduce((s,L) => s + L.amount, 0);
@@ -566,9 +589,9 @@ function buildReviews(){
     if(ageH > lim) add("feed|whop-stale|" + stamp.toISOString().slice(0,10), "U", "Whop feed is " + Math.round(ageH) + " hours old", "Last refresh " + esc(stamp.toLocaleString()) + ". The daily <span class=\"mono\">runWhopRecon()</span> trigger on the Master Tracker may have died. New payments are not being verified.", {locked:true}); }
 
   /* Whop payment with no EOC form = unattributed cash (link close) */
-  S.whop.filter(r => /^WHOP ONLY/.test(String(r["Recon Status"])) && String(r["Whop Paid Date"]||"") >= cutoff && !/subscription_cycle/.test(String(r["Whop Billing Reason"]||"")))
+  S.whop.filter(r => /^WHOP ONLY/.test(String(r["Recon Status"])) && !r.used && String(r["Whop Paid Date"]||"") >= cutoff && !/subscription_cycle/.test(String(r["Whop Billing Reason"]||"")) && amt(r["Whop Amount"]) >= 497)
     .forEach(r => { const id = "whop-only|" + String(r["Whop Payment ID"]||r["Whop Email"]||r["Whop Billing Name"]);
-      add(id, "U", money(amt(r["Whop Amount"])) + " paid on Whop with no EOC form", "<b>" + esc(r["Whop Billing Name"]||"") + "</b> (" + esc(r["Whop Email"]||"") + ") paid " + esc(fmtDY(r["Whop Paid Date"])) + ". Nobody earns commission on this until someone files an EOC for it or Maya assigns it by hand. Likely an Amanda or Kaia link close.", {kind:"whop-only"}); });
+      add(id, "U", money(amt(r["Whop Amount"])) + " from " + String(r["Whop Billing Name"]||"") + ": nobody is assigned", "Paid " + esc(fmtDY(r["Whop Paid Date"])) + " (" + esc(r["Whop Email"]||"") + ") with no EOC form and no closer on Maya's tracker. Add the closer on the Commissions Tracker and it pays out; dismiss if it earns nobody anything.", {kind:"whop-only"}); });
 
   /* EOC deal with no Whop payment = commission would be paid on unverified cash */
   S.dealRows.filter(d => /^EOC ONLY/.test(d.whopStatus) && d.date >= cutoff).forEach(d => {
@@ -583,45 +606,19 @@ function buildReviews(){
     else add("refund-unpaid|" + d.key + "|" + d.refunded, "I", money(d.refunded) + " refunded on " + d.prospect + " before payout",
       "Whop refunded " + money(d.refunded) + " of " + money(d.cash) + " and the commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet. Confirm whether it should still be paid in full.", {kind:"refund", dealKey:d.key}); });
 
-  /* Probable matches: amount + date agree, name does not */
-  S.dealRows.filter(d => /^PROBABLE/.test(d.whopStatus) && d.date >= cutoff).forEach(d => {
-    const w = d.whop || {};
-    add("probable|" + d.key, "I", "Name mismatch: " + d.prospect + " vs " + String(w["Whop Billing Name"]||"?"),
-      "EOC says <b>" + esc(d.prospect) + "</b>, the Whop card says <b>" + esc(w["Whop Billing Name"]||"") + "</b> (" + esc(w["Whop Email"]||"") + "), same amount and day. Probably the same person on someone else's card or a mistyped EOC name. Confirm, then dismiss.", {kind:"probable", dealKey:d.key}); });
-
   /* Reps not on the roster */
   Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => {
     add("roster|" + k, "I", title(k) + " is not on the Roster tab", "Deals name <b>" + esc(title(k)) + "</b> but the Roster has no row for them, so default rates apply (closer " + Math.round(CFG.DEFAULTS.closerRate*100) + "%, setter $" + CFG.DEFAULTS.show + "/$" + CFG.DEFAULTS.close + "). Add a row or fix the spelling on the EOC form.", {kind:"roster"}); });
 
-  /* Team 3.5% with nobody to pay it to */
-  const tu = S.teamUnassigned.filter(x => inRange(x.date)); if(tu.length) add("cfg|team-unassigned", "I", "Team " + Math.round(cfgNum("Team commission rate", CFG.DEFAULTS.teamRate)*1000)/10 + "% has no recipient · " + money(tu.reduce((s,x) => s + x.amount, 0)) + " this period", "Maya's tracker carries a Team line on every dollar collected. Put a name in <b>HQ Config → Team commission to</b> and it becomes a payable line; leave it blank and it stays here.", {locked:true});
-  /* Installments landing on Whop for people who are not on the Cash Log (pre-tracker plans) */
-  const byEmail = {}; (S.orphanCycles || []).filter(c => c.date >= cutoff).forEach(c => (byEmail[c.email] = byEmail[c.email] || []).push(c));
-  Object.keys(byEmail).forEach(em => { const cs = byEmail[em].sort((a,b) => a.date < b.date ? -1 : 1), last = cs[cs.length-1], tot = cs.reduce((x,c) => x + c.amount, 0);
-    add("orphan-inst|" + em, "I", (last.name || em) + ": " + cs.length + " installment" + (cs.length === 1 ? "" : "s") + " (" + money(tot) + ") on a plan that is not on the Cash Log", "Latest " + money(last.amount) + " on " + esc(fmtDY(last.date)) + " (" + esc(em) + "). The plan predates the Cash Log, so the dashboard cannot tell who closed it and pays nobody. Maya logs these by hand on her tracker (Michelle, Lynnette, Haley…). Add the original deal to the Cash Log with the closer, or dismiss.", {kind:"orphan"}); });
-  /* Maya's tracker vs the Cash Log */
-  S.maya.rows.filter(r => !r.matched && r.cash > 0 && r.date >= cutoff).forEach(r => add("maya-only|" + squash(r.name) + "|" + r.date, "I", r.name + " " + money(r.cash) + " is on Maya's tracker but not on the Cash Log", "Period " + esc(r.period) + (r.plan ? ", " + esc(r.plan) : "") + (r.closer ? ", closer " + esc(title(r.closer)) : "") + ". No EOC form or Whop match found under that name. If it is a real close, someone files the EOC; if it is an installment on an old plan, it is tracked above.", {kind:"maya-only"}));
-  S.maya.rows.filter(r => r.matched && r.matched.kind === "deal" && r.date >= cutoff).forEach(r => { const d = r.matched.deal; const iss = [];
-    if(r.closer && r.closer !== "UNSURE" && r.closer !== d.closer) iss.push("closer " + title(r.closer) + " vs EOC " + title(d.closer));
-    if(r.setter && !/UNSURE|^NO$/.test(r.setter) && isPerson(d.setter) && r.setter !== d.setter) iss.push("setter " + title(r.setter) + " vs EOC " + title(d.setter));
-    if(iss.length) add("maya-diff|" + d.key, "U", "Maya's tracker disagrees with the EOC on " + d.prospect, esc(iss.join("; ")) + ". The dashboard pays the EOC names (the closer filed the form herself). Fix whichever is wrong before paying.", {kind:"maya-diff", dealKey:d.key}); });
-  const lastMaya = S.maya.blocks.map(b => b.to).filter(Boolean).sort().pop();
-  if(lastMaya) S.dealRows.filter(d => !d.maya && d.date <= lastMaya && d.date >= cutoff && !/^EOC ONLY/.test(d.whopStatus)).forEach(d => add("maya-missing|" + d.key, "I", d.prospect + " " + money(d.cash) + " is not on Maya's tracker", "EOC " + esc(fmtDY(d.date)) + ", " + esc(title(d.closer)) + (isPerson(d.setter) ? " / " + esc(title(d.setter)) : "") + ", " + (/^MATCHED/.test(d.whopStatus) ? "Whop-verified" : esc(d.whopStatus.toLowerCase())) + ". Maya's sheet covers through " + esc(fmtD(lastMaya)) + " and does not list this deal.", {kind:"maya-missing", dealKey:d.key}));
-  /* Setter 5% held for triage */
-  Object.keys(S.people).forEach(k => { const ps = personSummary(S.people[k]); const h = ps.held.filter(L => inRange(L.date)); if(!h.length) return;
-    add("held|" + k + "|" + S.fromD, "I", title(k) + ": " + money(h.reduce((s,L) => s + L.amount, 0)) + " setter commission held for triage", h.length + " pre-Aug-27 deal" + (h.length === 1 ? "" : "s") + " where Maya's tracker does not say Triage Completed = Yes (" + esc([...new Set(h.map(L => L.held))].join(", ")) + "). Mark them Yes on the Commissions Tracker and they become owed.", {locked:true}); });
-
-  /* Unpaid lines outside the selected period: not dismissible, it is a range thing */
-  Object.keys(S.people).forEach(k => { const ps = personSummary(S.people[k]); if(ps.owedOutside <= 0.004) return;
-    const oldest = ps.outside.map(L => L.date).sort()[0];
-    add("outside|" + k, "I", title(k) + " has " + money(ps.owedOutside) + " unpaid outside this period", ps.outside.length + " line" + (ps.outside.length === 1 ? "" : "s") + " dated " + esc(fmtDY(oldest)) + " onward sit outside " + esc(fmtD(S.fromD)) + " – " + esc(fmtD(S.toD)) + " and are not in the To-be-paid amount. Widen the range to include them, or log the historical payout on Ledger 2 if it was already sent.", {locked:true, kind:"outside"}); });
+  /* Maya's tracker names a different rep than the EOC form */
+  S.maya.rows.filter(r => r.matched && r.matched.kind === "deal" && r.matched.deal.source !== "maya" && r.date >= cutoff).forEach(r => { const d = r.matched.deal; const iss = [];
+    if(r.closer && r.closer !== "UNSURE" && r.closer !== d.closer) iss.push("closer " + title(r.closer) + " on Maya's sheet vs " + title(d.closer) + " on the EOC");
+    if(r.setter && !/UNSURE|^NO$/.test(r.setter) && isPerson(d.setter) && r.setter !== d.setter) iss.push("setter " + title(r.setter) + " on Maya's sheet vs " + title(d.setter) + " on the EOC");
+    if(iss.length) add("maya-diff|" + d.key, "U", "Who gets paid on " + d.prospect + "?", esc(iss.join("; ")) + ". The dashboard is paying the EOC name. Confirm and fix the wrong sheet, then dismiss.", {kind:"maya-diff", dealKey:d.key}); });
 
   /* Payment plan looks late: balance left and no payment in 35 days */
   S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > cfgNum("Late plan after (days)", CFG.DEFAULTS.lateDays)).forEach(d => {
     add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", "Last payment " + esc(fmtDY(d.lastPayment)) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.revenue) + ", " + money(d.remaining) + " remaining. Closer " + esc(title(d.closer)) + " has been paid on the cash so far only.", {kind:"late", dealKey:d.key}); });
-
-  /* Assumed rules, one-time */
-  if(S.roster.some(r => amt(r["Weekly $"]) > 0)) add("rule|weekly-assumed", "I", "Weekly DM-setting line is an assumed rule", "Kaia's $" + num(amt((S.roster.find(r => amt(r["Weekly $"]) > 0)||{})["Weekly $"])) + "/week accrues from " + esc(fmtDY(cfgDate("Kaia weekly from", CFG.DEFAULTS.flatFrom))) + " per the Aug 26 meeting, pending Maya's written brief. Dismiss once confirmed, or edit the Roster.", {kind:"rule"});
 
   const order = { U:0, I:1 };
   return out.sort((a,b) => (a.locked ? -1 : 0) - (b.locked ? -1 : 0) || order[a.level] - order[b.level]);
@@ -669,7 +666,12 @@ const whopPill = d => {
   if(/^PENDING/.test(st)) return '<span class="pill chk">pending recon</span>';
   return '<span class="pill">' + esc(st.slice(0,16) || "?") + '</span>';
 };
-const mayaPill = m => !S.maya.rows.length ? '' : (m ? (m.approved ? ' <span class="pill ok">Maya ✓</span>' : ' <span class="pill">Maya</span>') : ' <span class="pill chk">not on Maya\'s</span>');
+const mayaPill = () => "";
+const statusPill = d => { if(!d) return null; if(d.refunded > 0) return '<span class="pill bad">refunded ' + money(d.refunded) + '</span>';
+  const st = d.whopStatus; if(!S.whop.length) return null;
+  if(/^MATCHED|^PROBABLE/.test(st)) return '<span class="pill ok">Verified</span>';
+  if(/^PENDING/.test(st)) return '<span class="pill chk">Pending</span>';
+  return '<span class="pill bad">No payment found</span>'; };
 const paidPill = (paid, amount) => amount > 0 ? (paid ? '<span class="pill ok">paid</span>' : '<span class="pill bad">owed</span>') : null;
 
 /* ----- Pay Period ----- */
@@ -732,23 +734,26 @@ function renderPay(){
       '<span class="owed">' + money(s.owedPeriod) + '</span>',
       '<input type="checkbox" class="pay-chk" data-person="' + esc(x.k) + '" aria-label="Mark ' + esc(title(x.k)) + ' paid">']; });
   h += '<div class="panel pay"><div class="panel-head"><span>To be paid · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + '</span><span class="r">' + money(totalOwed) + ' · tick Paid when the money is sent · click a name for the deals</span></div><div class="tw">' +
-    tableInner(["Rep","Role","Lines","Owed this period","Paid?"], payRows, {left:[0,1], empty:"Nothing owed for this period."}) + '</div></div>';
+    tableInner(["Rep","Role","Lines","Owed this period","Paid?"], payRows, {left:[0,1], empty:"Nothing owed for this period."}) + '</div>' +
+    (() => { const ol = Object.keys(S.people).map(k => ({k, s:personSummary(S.people[k])})).filter(x => x.s.owedOutside > 0.004).sort((a,b) => b.s.owedOutside - a.s.owedOutside);
+      return ol.length ? '<div style="padding:9px 16px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--hair)">Unpaid from other periods, not included above: ' + ol.map(x => esc(title(x.k)) + ' ' + money(x.s.owedOutside)).join(' · ') + ' &nbsp;<button class="btn sm" id="show-all">Show all time</button></div>' : ''; })() + '</div>';
 
   /* transactions this period */
   const instW = S.lines.filter(L => L.kind === "installment" && inRange(L.date));
   const txRows = dealsW.map(d => ({ date:d.date, d, inst:null })).concat(instW.map(L => ({ date:L.date, d:S.dealRows.find(x => x.key === L.dealKey), inst:L }))).sort((a,b) => a.date < b.date ? 1 : -1);
   const tx = txRows.map(({d, inst}) => inst ? [
-    esc(fmtD(inst.date)), esc(d.prospect), '<span class="mute">Installment</span>', money(inst.cash), d.remaining > 0 ? money(d.remaining) : null, "Plan", whopPill(d) + mayaPill(inst.maya),
+    esc(fmtD(inst.date)), esc(d.prospect), '<span class="mute">Installment</span>', money(inst.cash), d.remaining > 0 ? money(d.remaining) : null, "Plan", statusPill(d),
     esc(title(d.closer)), money(inst.amount) + " " + (paidPill(inst.paid, inst.amount) || ""), null, null, null] : [
-    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), d.remaining > 0 ? money(d.remaining) : null, esc(d.payType || "") || null, whopPill(d) + mayaPill(d.maya),
+    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), d.remaining > 0 ? money(d.remaining) : null, esc(d.payType || "") || null, statusPill(d),
     isPerson(d.closer) ? esc(title(d.closer)) : null, d.closerComm ? money(d.closerComm) + " " + (paidPill(d.closerPaid, d.closerComm) || "") : null,
     isPerson(d.setter) ? esc(title(d.setter)) : null, d.setterComm ? money(d.setterComm) + " " + (paidPill(d.setterPaid, d.setterComm) || "") : null,
     d.dmSetter ? esc(title(d.dmSetter)) : null]);
   const cashInst = instW.reduce((s,L) => s + L.cash, 0);
-  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Collected","Remaining","Pay type","Whop","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,5,7,9,11], empty:"No deals or installments in this period."}) + '</div>', num(dealsW.length) + " deals" + (instW.length ? " + " + instW.length + " installment" + (instW.length === 1 ? "" : "s") : "") + " · " + money(cashW + cashInst));
+  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Collected","Remaining","Pay type","Payment","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,5,7,9,11], empty:"No deals or installments in this period."}) + '</div>', num(dealsW.length) + " deals" + (instW.length ? " + " + instW.length + " installment" + (instW.length === 1 ? "" : "s") : "") + " · " + money(cashW + cashInst));
   if(showsW.length) h += panel("Setter shows without a close · $" + (showsW[0].amount) + " each", '<div class="tw">' + tableInner(["Date","Customer","Setter","Closer on the call","Earned"], showsW.map(s => [esc(fmtD(s.date)), esc(s.prospect), esc(title(s.setter)), isPerson(s.closer) ? esc(title(s.closer)) : null, money(s.amount)]), {left:[1,2,3]}) + '</div>');
 
-  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed this period</strong> is the commission on deals, installments and calls dated inside the selected range that is not marked paid on Ledger 2 or covered by a wired block on Maya\'s Commissions Tracker. Closers earn their rate on each installment as it lands on Whop, the way Maya has been paying it. Pre-Aug-27 setter 5% is held until Maya\'s row says Triage Completed = Yes. Anything unpaid outside the range shows up in the review queue so it cannot get lost. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
+  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed this period</strong> is the commission on deals, installments and calls dated inside the selected range that is not marked paid on Ledger 2 or covered by a wired block on Maya\'s Commissions Tracker. Closers earn their rate on each installment as it lands on Whop, the way Maya has been paying it. Deals that only exist on Maya\'s Commissions Tracker (link closes, older plans) are paid to the closer she wrote down. Anything unpaid outside the range shows up in the review queue so it cannot get lost. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
+    (S.teamUnassigned && S.teamUnassigned.length ? '<p style="color:var(--ink-3)">The 3.5% team line on Maya\'s tracker has no recipient set (HQ Config → Team commission to), so it is not owed to anyone here.</p>' : '') +
     '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for this period\'s amount and marks those lines paid. Ticking a review item hides it for everyone. Both write to the HQ sheet.</p></div>';
   const pg = document.getElementById("page-pay"); pg.innerHTML = h;
 
@@ -756,6 +761,7 @@ function renderPay(){
   pg.querySelectorAll(".pay-chk").forEach(b => b.onchange = () => { if(b.checked) confirmPayout(b.dataset.person, () => { b.checked = false; }); });
   pg.querySelectorAll("#queue .qi input").forEach(b => b.onchange = () => { if(b.checked) dismissReview(b.closest(".qi").dataset.id, () => { b.checked = false; }); });
   const sd = document.getElementById("show-dismissed"); if(sd) sd.onclick = () => openDismissed();
+  const sa = document.getElementById("show-all"); if(sa) sa.onclick = () => { const r = presetRange("all"); S.fromD = r[0]; S.toD = r[1]; renderPay(); };
 }
 
 /* ----- Drawer: person ----- */
@@ -768,15 +774,14 @@ function closeDrawer(){ document.getElementById("drawer").classList.remove("on")
 function lineRow(L){
   const d = L.dealKey ? S.dealRows.find(x => x.key === L.dealKey) : null;
   const kind = { close:"Closed", "set-close":"Set · closed", "set-pct":"Set (5%)", show:"Set · call held", weekly:"Weekly", installment:"Installment", team:"Team" }[L.kind] || L.kind;
-  return [esc(fmtD(L.date)), esc(L.prospect), esc(L.offer || "") || null, L.cash ? money(L.cash) : null, esc(kind) + (L.held ? ' <span class="pill chk">held</span>' : ''), d ? whopPill(d) + mayaPill(L.kind === "installment" ? L.maya : d.maya) : null, money(L.amount)];
+  return [esc(fmtD(L.date)), esc(L.prospect), esc(L.offer || "") || null, L.cash ? money(L.cash) : null, esc(kind), d ? statusPill(d) : null, money(L.amount)];
 }
 function openPerson(k){
   const p = S.people[k]; if(!p) return; const s = personSummary(p);
   const byDate = (a,b) => a.date < b.date ? 1 : -1;
   const period = s.periodLines.slice().sort(byDate), outside = s.outside.slice().sort(byDate), paid = s.paid.slice().sort(byDate);
-  const heads = ["Date","Customer","Offer","Collected","Role on deal","Whop","Commission"];
+  const heads = ["Date","Customer","Offer","Collected","Role on deal","Payment","Commission"];
   let body = '<div class="sec">Owed this period · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + ' · ' + period.length + ' line' + (period.length === 1 ? "" : "s") + ' · ' + money(s.owedPeriod) + '</div><div class="tw">' + tableInner(heads, period.map(lineRow), {left:[1,2,4], empty:"Nothing owed in this period."}) + '</div>';
-  if(s.held.length) body += '<div class="sec" style="margin-top:14px">Held for triage · ' + s.held.length + ' line' + (s.held.length === 1 ? "" : "s") + ' · ' + money(s.heldAmt) + '</div><div class="tw">' + tableInner(heads, s.held.slice().sort(byDate).map(lineRow), {left:[1,2,4]}) + '</div>';
   if(outside.length) body += '<div class="sec" style="margin-top:14px">Unpaid outside this period · ' + outside.length + ' line' + (outside.length === 1 ? "" : "s") + ' · ' + money(s.owedOutside) + '</div><div class="tw">' + tableInner(heads, outside.map(lineRow), {left:[1,2,4]}) + '</div>';
   if(paid.length) body += '<div class="sec" style="margin-top:14px">Paid · ' + paid.length + ' line' + (paid.length === 1 ? "" : "s") + ' · ' + money(s.paidAll) + '</div><div class="tw">' + tableInner(heads.concat(["Payout"]), paid.map(L => lineRow(L).concat([esc(fmtD(L.payout ? L.payout["Date Paid"] : "")) + ' <span class="mute">' + esc(String(L.payout ? L.payout["Payout ID"] : "")) + '</span>'])), {left:[1,2,4]}) + '</div>';
   if(p.roster && p.roster.notes) body += '<div class="sec" style="margin-top:14px">Roster note</div><div style="padding:0 20px 16px;font-size:12.5px;color:var(--ink-2)">' + esc(p.roster.notes) + '</div>';
@@ -795,7 +800,7 @@ function openDismissed(){
 const L1 = { q:"", person:"", offer:"", sort:"date", dir:"desc" };
 function renderL1(){
   document.getElementById("pg-title").textContent = "Ledger 1 · Deals";
-  document.getElementById("pg-sub").textContent = "Every closed deal on the Cash Log since " + (S.dealRows.length ? fmtDY(S.dealRows.map(d => d.date).sort()[0]) : "—") + ", joined to Whop";
+  document.getElementById("pg-sub").textContent = "Every deal since " + (S.dealRows.length ? fmtDY(S.dealRows.map(d => d.date).sort()[0]) : "—") + ", joined to Whop";
   document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv1">Download CSV</button>';
   const people = Object.keys(S.people).sort(), offers = [...new Set(S.dealRows.map(d => d.offer).filter(Boolean))].sort();
   let rows = S.dealRows.filter(d => (!L1.person || d.closer === L1.person || d.setter === L1.person) && (!L1.offer || d.offer === L1.offer) && (!L1.q || (d.prospect + " " + d.closer + " " + d.setter + " " + d.whopStatus + " " + (d.whop ? d.whop["Whop Email"] : "")).toLowerCase().includes(L1.q.toLowerCase())));
@@ -807,19 +812,19 @@ function renderL1(){
     '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email" value="' + esc(L1.q) + '">' +
     '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select>' +
     '<select id="f-offer"><option value="">All offers</option>' + offers.map(o => '<option value="' + esc(o) + '"' + (L1.offer === o ? ' selected' : '') + '>' + esc(o) + '</option>').join("") + '</select></div>' +
-    '<div class="tw"><table><thead><tr>' + th("Date","date") + '<th>Week</th>' + th("Customer","prospect",1) + th("Offer","offer",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th>Last payment</th><th class="l">Pay type</th><th>Whop</th><th>Maya</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
-    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(fmtD(d.week)), esc(d.prospect), esc(d.offer), money(d.cash), d.installments ? money(d.collected) + ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : money(d.collected), d.remaining > 0 ? money(d.remaining) : "—", d.lastPayment ? esc(fmtD(d.lastPayment)) : "—", esc(d.payType) || "—", whopPill(d), d.maya ? (d.maya.approved ? '<span class="pill ok">approved</span>' : '<span class="pill">listed</span>') : (S.maya.rows.length ? '<span class="pill chk">missing</span>' : "—"),
+    '<div class="tw"><table><thead><tr>' + th("Date","date") + th("Customer","prospect",1) + th("Offer","offer",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th>Last payment</th><th class="l">Pay type</th><th>Payment</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
+    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), /plan/i.test(d.payType) ? money(d.collected) + (d.installments ? ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : '') : "—", /plan/i.test(d.payType) && d.remaining > 0 ? money(d.remaining) : "—", /plan/i.test(d.payType) && d.lastPayment ? esc(fmtD(d.lastPayment)) : "—", esc(d.payType) || "—", statusPill(d) || "—",
       isPerson(d.closer) ? esc(title(d.closer)) : "—", d.closerComm ? money(d.closerComm) : "—", paidPill(d.closerPaid, d.closerComm) || "—",
       isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—", d.dmSetter ? esc(title(d.dmSetter)) : "—"]
-      .map((c,i) => '<td class="' + ([2,3,8,11,14,17].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="18" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
+      .map((c,i) => '<td class="' + ([1,2,7,9,12,15].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="16" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
     '</tbody></table></div></div>';
-  h += '<div class="note"><p><strong>Collected</strong> is the cash on the EOC form; <strong>Paid to date</strong> adds every later installment Whop has taken on that customer\'s plan; <strong>Remaining</strong> is contracted minus paid to date. Commission is earned on each payment as it lands, so a closer on a $3,000 plan is paid $50 on the first $500 and the rest as installments clear.</p><p><strong>Whop</strong> column: <span class="pill ok">Whop ✓</span> matched a real payment on amount, date and name · <span class="pill chk">probable</span> amount and date matched, name did not · <span class="pill bad">no payment</span> a form was filed and no money landed. Installment payments on plans are never commissionable and are not shown here. Refunds surface in the review queue.</p></div>';
+  h += '<div class="note"><p><strong>Payment</strong>: <span class="pill ok">Verified</span> the money is on Whop · <span class="pill chk">Pending</span> closed in the last two days, Whop check runs at 6 AM · <span class="pill bad">No payment found</span> a form was filed and no money landed, do not pay on it yet. <strong>Paid to date / Remaining / Last payment</strong> only apply to payment plans. Commission is earned on each payment as it lands.</p></div>';
   const pg = document.getElementById("page-l1"); pg.innerHTML = h;
   document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); document.getElementById("f-q").focus(); const i = document.getElementById("f-q"); i.setSelectionRange(i.value.length, i.value.length); };
   document.getElementById("f-person").onchange = e => { L1.person = e.target.value; renderL1(); };
   document.getElementById("f-offer").onchange = e => { L1.offer = e.target.value; renderL1(); };
   pg.querySelectorAll("th.sort").forEach(t => t.onclick = () => { const k = t.dataset.key; if(L1.sort === k) L1.dir = L1.dir === "asc" ? "desc" : "asc"; else { L1.sort = k; L1.dir = k === "date" || k === "cash" ? "desc" : "asc"; } renderL1(); });
-  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Week (Thu)","Customer","Offer","Collected (initial)","Paid to date","Contracted","Remaining","Last payment","Pay type","Whop status","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.week, d.prospect, d.offer, d.cash, d.collected, d.revenue, d.remaining, d.lastPayment, d.payType, d.whopStatus, title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
+  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Customer","Offer","Collected (initial)","Paid to date","Contracted","Remaining","Last payment","Pay type","Payment status","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.prospect, d.offer, d.cash, d.collected, d.revenue, d.remaining, d.lastPayment, d.payType, d.whopStatus, title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
 }
 
 /* ----- Ledger 2: payouts ----- */
