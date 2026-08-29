@@ -820,7 +820,7 @@ function renderL2(){
   document.getElementById("pg-title").textContent = "Ledger 2 · Payouts";
   const live = S.payouts.filter(p => !truthy(p["Voided"])), voided = S.payouts.filter(p => truthy(p["Voided"]));
   const mayaPaid = b => S.lines.filter(L => L.paid && L.payout && L.payout.source === "maya" && L.date >= b.from && L.date <= b.to);
-  const wires = S.maya.blocks.filter(b => b.wireSent).map(b => ({ label:b.label, date:b.wireDate, amount: mayaPaid(b).reduce((s,L) => s + L.amount, 0), n: mayaPaid(b).length }));
+  const wires = S.maya.blocks.filter(b => b.wireSent).map(b => ({ label:b.label, date:b.wireDate, amount: mayaPaid(b).reduce((s,L) => s + L.amount, 0), n: mayaPaid(b).length })).filter(w => w.n > 0);
   const hist = S.lines.filter(L => L.paid && L.payout && L.payout.source === "through");
   const histBy = {}; hist.forEach(L => histBy[L.person] = (histBy[L.person] || 0) + L.amount);
   const total = live.reduce((s,p) => s + amt(p["Amount Paid"]), 0) + wires.reduce((s,w) => s + w.amount, 0) + hist.reduce((s,L) => s + L.amount, 0);
