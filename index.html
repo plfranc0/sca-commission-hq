@@ -530,6 +530,10 @@ function compute(){
       else S.teamUnassigned.push({ date:r.date, amount:t, prospect:r.name }); }
     S.dealRows.push(d); });
 
+  /* Everything on or before HQ Config → "Paid through" was paid out already (Patrick, 8/28) */
+  const PAID_THROUGH = cfgDate("Paid through", ""); S.paidThrough = PAID_THROUGH;
+  if(/^\d{4}-\d\d-\d\d$/.test(PAID_THROUGH)) lines.filter(L => !L.paid && L.date <= PAID_THROUGH).forEach(L => { L.paid = true; L.payout = { "Payout ID":"Historical", "Date Paid": PAID_THROUGH, "Paid By":"Maya", source:"through" }; });
+
   /* A block Maya marked "Wire Transfer Sent" pays every line dated inside it */
   S.maya.blocks.filter(b => b.wireSent && b.from && b.to).forEach(b => {
     lines.filter(L => !L.paid && L.date >= b.from && L.date <= b.to).forEach(L => { L.paid = true; L.payout = { "Payout ID":"Maya wire", "Date Paid": b.wireDate || b.to, "Paid By":"Maya", source:"maya" }; }); });
@@ -817,7 +821,9 @@ function renderL2(){
   const live = S.payouts.filter(p => !truthy(p["Voided"])), voided = S.payouts.filter(p => truthy(p["Voided"]));
   const mayaPaid = b => S.lines.filter(L => L.paid && L.payout && L.payout.source === "maya" && L.date >= b.from && L.date <= b.to);
   const wires = S.maya.blocks.filter(b => b.wireSent).map(b => ({ label:b.label, date:b.wireDate, amount: mayaPaid(b).reduce((s,L) => s + L.amount, 0), n: mayaPaid(b).length }));
-  const total = live.reduce((s,p) => s + amt(p["Amount Paid"]), 0) + wires.reduce((s,w) => s + w.amount, 0);
+  const hist = S.lines.filter(L => L.paid && L.payout && L.payout.source === "through");
+  const histBy = {}; hist.forEach(L => histBy[L.person] = (histBy[L.person] || 0) + L.amount);
+  const total = live.reduce((s,p) => s + amt(p["Amount Paid"]), 0) + wires.reduce((s,w) => s + w.amount, 0) + hist.reduce((s,L) => s + L.amount, 0);
   document.getElementById("pg-sub").textContent = num(live.length) + " payout" + (live.length === 1 ? "" : "s") + " · " + money(total) + " sent to the sales team" + (voided.length ? " · " + voided.length + " voided" : "");
   document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv2">Download CSV</button>';
   const byPerson = {}; live.forEach(p => { const k = normName(p["Person"]); byPerson[k] = (byPerson[k] || 0) + amt(p["Amount Paid"]); });
@@ -832,6 +838,7 @@ function renderL2(){
       names.length ? esc(names.slice(0,3).join(", ")) + (names.length > 3 ? " +" + (names.length - 3) : "") : null,
       esc(p["Paid By"] || "") || null, esc(p["Notes"] || "") || null, '<span class="mute">' + esc(p["Payout ID"]) + '</span>',
       v ? '<span class="pill bad">voided</span>' : '<button class="btn sm danger void-btn" data-id="' + esc(p["Payout ID"]) + '">Void</button>']; });
+  if(hist.length) h += panel("Paid before " + esc(fmtDY(S.paidThrough)) + " · historical payouts, already sent", '<div class="tw">' + tableInner(["Rep","Lines","Commission paid"], Object.keys(histBy).sort((a,b) => histBy[b] - histBy[a]).map(k => [esc(title(k)), num(hist.filter(L => L.person === k).length), money(histBy[k])]), {left:[0]}) + '</div>', "HQ Config → Paid through");
   if(wires.length) h += panel("Wires on Maya's Commissions Tracker · blocks marked Wire Transfer Sent", '<div class="tw">' + tableInner(["Period","Wire date","Lines covered","Commission covered"], wires.map(w => [esc(w.label), esc(w.date || "—"), num(w.n), money(w.amount)]), {left:[0,1]}) + '</div>', "read-only");
   h += panel("Payouts", '<div class="tw">' + tableInner(["Paid","Rep","Role","Amount","Period","Lines","Deals","Paid by","Notes","ID",""], rows, {left:[1,2,6,7,8,9], empty:"No payouts logged yet. Tick Paid on the Pay Period page and the first one lands here."}) + '</div>', "newest first");
   h += '<div class="note"><p><strong>Ledger 2 is the record of money actually sent.</strong> Each row is written when someone ticks Paid, and lists the exact commission lines it covered. <strong>Void</strong> keeps the row but un-marks its lines, so the amount goes back to owed. Nothing here is ever deleted.</p></div>';
