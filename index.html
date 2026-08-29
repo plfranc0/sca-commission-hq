@@ -375,6 +375,11 @@ function compute(){
   S.whop.forEach(r => { const nm = normName(r["Prospect"]), cd = String(r["Call Date"]||""); if(!nm || !cd) return;
     [0,-1,1].forEach((d,i) => { const k = nm + "|" + dayShift(cd, d); if(i === 0 || !wmap[k]) wmap[k] = r; }); });
 
+  /* Installments from Whop Payments, keyed by email: a plan's later payments (subscription_cycle) */
+  const cycles = {};
+  S.whopPay.forEach(r => { const em = String(r["Email"]||"").trim().toLowerCase(); if(!em || !/subscription_cycle/.test(String(r["Billing Reason"]||""))) return;
+    (cycles[em] = cycles[em] || []).push({ date: gvDate(r["Paid Date"]), amount: amt(r["Amount"]) - amt(r["Refunded"]) }); });
+
   const people = {};
   const P = name => { if(!people[name]){ const ro = rosterFor(name); people[name] = { name, roster: ro, roles:{}, lines:[] }; } return people[name]; };
   const lines = [];   /* every commission line: {id, person, role, amount, dealKey, date, week, prospect, offer, cash, kind} */
@@ -390,7 +395,14 @@ function compute(){
     /* the recon job runs once a day at 6 AM PT, so a deal filed today has no row yet: that is pending, not missing */
     const whopStatus = w ? String(w["Recon Status"]||"") : (S.whop.length ? (daysBetween(date, todayISO()) <= 2 ? "PENDING RECON" : "NOT ON WHOP") : "");
     const refunded = w ? amt(w["Whop Refunded"]) : 0;
+    const email = w ? String(w["Whop Email"]||"").trim().toLowerCase() : "";
+    const firstPaid = w && has(w["Whop Paid Date"]) ? String(w["Whop Paid Date"]) : date;
+    const later = (email && cycles[email] ? cycles[email] : []).filter(c => c.date > firstPaid);
+    const collected = cash + later.reduce((s,c) => s + c.amount, 0);
+    const lastPayment = later.length ? later.map(c => c.date).sort().pop() : (w && has(w["Whop Paid Date"]) ? String(w["Whop Paid Date"]) : "");
+    const remaining = Math.max(revenue - collected, 0);
     const d = { i, key, date, week, prospect, closer, setter, offer:String(r["Offer"]||""), payType:String(r["Pay Type"]||""), cash, revenue,
+                collected, remaining, lastPayment, installments: later.length, email,
                 flat, whop:w, whopStatus, refunded, closerComm:0, setterComm:0, dmSetter: closer === "KAIA" ? "KAIA" : "", lines:[] };
     /* closer line */
     if(isPerson(closer)){
@@ -429,7 +441,7 @@ function compute(){
   const cur = thuWeek(todayISO());
   S.weeks = []; for(let w = thuWeek(first); w <= cur; w = dayShift(w, 7)) S.weeks.push(w);
   S.weeks.reverse();
-  if(!S.fromD){ S.fromD = cur; S.toD = dayShift(cur, 6); }
+  if(!S.fromD){ const r = presetRange("payout"); S.fromD = r[0]; S.toD = r[1]; }
 
   /* Weekly retainers from the Roster (Kaia's DM line), accrued per week from the config date */
   S.roster.forEach(r => { const name = normName(r["Name"]); const weekly = amt(r["Weekly $"]); if(!name || !weekly) return;
@@ -459,9 +471,10 @@ function compute(){
 function personSummary(p){
   const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid);
   const owed = unpaid.reduce((s,L) => s + L.amount, 0);
-  const owedPeriod = unpaid.filter(L => inRange(L.date)).reduce((s,L) => s + L.amount, 0);
+  const periodLines = unpaid.filter(L => inRange(L.date)), outside = unpaid.filter(L => !inRange(L.date));
+  const owedPeriod = periodLines.reduce((s,L) => s + L.amount, 0), owedOutside = outside.reduce((s,L) => s + L.amount, 0);
   const earnedAll = p.lines.reduce((s,L) => s + L.amount, 0);
-  return { owed, owedPeriod, carried: owed - owedPeriod, unpaid, paid, earnedAll, paidAll: paid.reduce((s,L) => s + L.amount, 0) };
+  return { owed, owedPeriod, owedOutside, periodLines, outside, unpaid, paid, earnedAll, paidAll: paid.reduce((s,L) => s + L.amount, 0) };
 }
 
 /* ---------------- review rules ---------------- */
@@ -508,6 +521,15 @@ function buildReviews(){
   /* Reps not on the roster */
   Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => {
     add("roster|" + k, "I", title(k) + " is not on the Roster tab", "Deals name <b>" + esc(title(k)) + "</b> but the Roster has no row for them, so default rates apply (closer " + Math.round(CFG.DEFAULTS.closerRate*100) + "%, setter $" + CFG.DEFAULTS.show + "/$" + CFG.DEFAULTS.close + "). Add a row or fix the spelling on the EOC form.", {kind:"roster"}); });
+
+  /* Unpaid lines outside the selected period: not dismissible, it is a range thing */
+  Object.keys(S.people).forEach(k => { const ps = personSummary(S.people[k]); if(ps.owedOutside <= 0.004) return;
+    const oldest = ps.outside.map(L => L.date).sort()[0];
+    add("outside|" + k, "I", title(k) + " has " + money(ps.owedOutside) + " unpaid outside this period", ps.outside.length + " line" + (ps.outside.length === 1 ? "" : "s") + " dated " + esc(fmtDY(oldest)) + " onward sit outside " + esc(fmtD(S.fromD)) + " – " + esc(fmtD(S.toD)) + " and are not in the To-be-paid amount. Widen the range to include them, or log the historical payout on Ledger 2 if it was already sent.", {locked:true, kind:"outside"}); });
+
+  /* Payment plan looks late: balance left and no payment in 35 days */
+  S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > 35).forEach(d => {
+    add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", "Last payment " + esc(fmtDY(d.lastPayment)) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.revenue) + ", " + money(d.remaining) + " remaining. Closer " + esc(title(d.closer)) + " has been paid on the cash so far only.", {kind:"late", dealKey:d.key}); });
 
   /* Assumed rules, one-time */
   if(S.roster.some(r => amt(r["Weekly $"]) > 0)) add("rule|weekly-assumed", "I", "Weekly DM-setting line is an assumed rule", "Kaia's $" + num(amt((S.roster.find(r => amt(r["Weekly $"]) > 0)||{})["Weekly $"])) + "/week accrues from " + esc(fmtDY(cfgDate("Kaia weekly from", CFG.DEFAULTS.flatFrom))) + " per the Aug 26 meeting, pending Maya's written brief. Dismiss once confirmed, or edit the Roster.", {kind:"rule"});
@@ -566,6 +588,9 @@ function presetRange(v){
   const monthEnd = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1], 0)).toISOString().slice(0,10); };
   const prevYm = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1]-2, 1)).toISOString().slice(0,7); };
   switch(v){
+    /* Payout week: Sat–Thu, paid the following Friday via Gusto (Taylor, 8/28). The Thursday on or before today closes the period. */
+    case "payout": { const thu = dayShift(cur, cur > t ? -7 : 0); return [dayShift(thu, -5), thu]; }
+    case "payout-prev": { const thu = dayShift(cur, cur > t ? -7 : 0); return [dayShift(thu, -12), dayShift(thu, -7)]; }
     case "this-week": return [cur, dayShift(cur, 6)];
     case "last-week": return [dayShift(cur, -7), dayShift(cur, -1)];
     case "this-month": return [ym + "-01", monthEnd(ym)];
@@ -576,15 +601,15 @@ function presetRange(v){
   }
 }
 function presetFor(a, b){
-  for(const v of ["this-week","last-week","this-month","last-month","30","all"]){ const r = presetRange(v); if(r && r[0] === a && r[1] === b) return v; }
+  for(const v of ["payout","payout-prev","this-week","last-week","this-month","last-month","30","all"]){ const r = presetRange(v); if(r && r[0] === a && r[1] === b) return v; }
   return "custom";
 }
 function renderPay(){
   document.getElementById("pg-title").textContent = "Pay Period";
   const preset = presetFor(S.fromD, S.toD);
-  document.getElementById("pg-sub").textContent = fmtDY(S.fromD) + " – " + fmtDY(S.toD) + (preset === "this-week" ? " · current webinar week" : "");
+  document.getElementById("pg-sub").textContent = fmtDY(S.fromD) + " – " + fmtDY(S.toD) + (preset === "payout" ? " · this Friday's payout" : preset === "this-week" ? " · current webinar week" : "");
   document.getElementById("pg-ctl").innerHTML = '<select id="preset" aria-label="Preset range">' +
-    [["this-week","This week (Thu–Wed)"],["last-week","Last week"],["this-month","This month"],["last-month","Last month"],["30","Last 30 days"],["all","All time"],["custom","Custom"]]
+    [["payout","Payout week (Sat–Thu)"],["payout-prev","Previous payout week"],["this-week","Webinar week (Thu–Wed)"],["last-week","Last webinar week"],["this-month","This month"],["last-month","Last month"],["30","Last 30 days"],["all","All time"],["custom","Custom"]]
       .map(([v,l]) => '<option value="' + v + '"' + (v === preset ? ' selected' : '') + '>' + l + '</option>').join("") + '</select>' +
     '<input type="date" id="from" value="' + S.fromD + '" aria-label="From"><span class="role">to</span><input type="date" id="to" value="' + S.toD + '" aria-label="To">' +
     '<button class="btn" id="refresh">Refresh</button>';
@@ -596,8 +621,8 @@ function renderPay(){
 
   const dealsW = S.dealRows.filter(d => inRange(d.date)), showsW = S.showRows.filter(s => inRange(s.date));
   const linesW = S.lines.filter(L => inRange(L.date));
-  const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owed > 0.004).sort((a,b) => b.s.owed - a.s.owed);
-  const totalOwed = names.reduce((s,x) => s + x.s.owed, 0);
+  const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owedPeriod > 0.004).sort((a,b) => b.s.owedPeriod - a.s.owedPeriod);
+  const totalOwed = names.reduce((s,x) => s + x.s.owedPeriod, 0);
   const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
   const cashW = dealsW.reduce((s,d) => s + d.cash, 0), earnedW = linesW.reduce((s,L) => s + L.amount, 0);
 
@@ -613,25 +638,23 @@ function renderPay(){
   const payRows = names.map(x => { const p = S.people[x.k], s = x.s;
     return ['<button class="name-btn" data-person="' + esc(x.k) + '">' + esc(title(x.k)) + '</button>',
       '<span class="role">' + esc(Object.keys(p.roles).join(" + ")) + '</span>',
-      num(s.unpaid.length),
-      s.owedPeriod > 0 ? money(s.owedPeriod) : null,
-      s.carried > 0.004 ? money(s.carried) : null,
-      '<span class="owed">' + money(s.owed) + '</span>',
+      num(s.periodLines.length),
+      '<span class="owed">' + money(s.owedPeriod) + '</span>',
       '<input type="checkbox" class="pay-chk" data-person="' + esc(x.k) + '" aria-label="Mark ' + esc(title(x.k)) + ' paid">']; });
-  h += '<div class="panel pay"><div class="panel-head"><span>To be paid</span><span class="r">tick Paid when the money is sent · click a name for the deals</span></div><div class="tw">' +
-    tableInner(["Rep","Role","Lines","This period","Carried over","Owed","Paid?"], payRows, {left:[0,1], empty:"Everyone is paid up."}) + '</div></div>';
+  h += '<div class="panel pay"><div class="panel-head"><span>To be paid · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + '</span><span class="r">' + money(totalOwed) + ' · tick Paid when the money is sent · click a name for the deals</span></div><div class="tw">' +
+    tableInner(["Rep","Role","Lines","Owed this period","Paid?"], payRows, {left:[0,1], empty:"Nothing owed for this period."}) + '</div></div>';
 
   /* transactions this period */
   const tx = dealsW.slice().sort((a,b) => a.date < b.date ? 1 : -1).map(d => [
-    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), esc(d.payType || "") || null, whopPill(d),
+    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), d.remaining > 0 ? money(d.remaining) : null, esc(d.payType || "") || null, whopPill(d),
     isPerson(d.closer) ? esc(title(d.closer)) : null, d.closerComm ? money(d.closerComm) + " " + (paidPill(d.closerPaid, d.closerComm) || "") : null,
     isPerson(d.setter) ? esc(title(d.setter)) : null, d.setterComm ? money(d.setterComm) + " " + (paidPill(d.setterPaid, d.setterComm) || "") : null,
     d.dmSetter ? esc(title(d.dmSetter)) : null]);
-  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Cash","Pay type","Whop","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,4,6,8,10], empty:"No deals on the Cash Log for this week yet."}) + '</div>', num(dealsW.length) + " deals · " + money(cashW));
+  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Collected","Remaining","Pay type","Whop","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,5,7,9,11], empty:"No deals on the Cash Log for this week yet."}) + '</div>', num(dealsW.length) + " deals · " + money(cashW));
   if(showsW.length) h += panel("Setter shows without a close · $" + (showsW[0].amount) + " each", '<div class="tw">' + tableInner(["Date","Customer","Setter","Closer on the call","Earned"], showsW.map(s => [esc(fmtD(s.date)), esc(s.prospect), esc(title(s.setter)), isPerson(s.closer) ? esc(title(s.closer)) : null, money(s.amount)]), {left:[1,2,3]}) + '</div>');
 
-  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed</strong> is every unpaid line across all periods, so a rep is never dropped off this list until they are actually paid. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
-    '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for the full amount owed and marks every line in it paid. Ticking a review item hides it for everyone. Both write to the HQ sheet.</p></div>';
+  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed this period</strong> is the commission on deals and calls dated inside the selected range that has not been logged as paid on Ledger 2. Anything unpaid outside the range shows up in the review queue so it cannot get lost. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
+    '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for this period\'s amount and marks those lines paid. Ticking a review item hides it for everyone. Both write to the HQ sheet.</p></div>';
   const pg = document.getElementById("page-pay"); pg.innerHTML = h;
 
   pg.querySelectorAll(".name-btn").forEach(b => b.onclick = () => openPerson(b.dataset.person));
@@ -654,13 +677,15 @@ function lineRow(L){
 }
 function openPerson(k){
   const p = S.people[k]; if(!p) return; const s = personSummary(p);
-  const unpaid = s.unpaid.slice().sort((a,b) => a.date < b.date ? 1 : -1), paid = s.paid.slice().sort((a,b) => a.date < b.date ? 1 : -1);
-  const heads = ["Date","Customer","Offer","Deal","Role on deal","Whop","Commission"];
-  let body = '<div class="sec">Owed · ' + unpaid.length + ' line' + (unpaid.length === 1 ? "" : "s") + ' · ' + money(s.owed) + '</div><div class="tw">' + tableInner(heads, unpaid.map(lineRow), {left:[1,2,4], empty:"Nothing owed."}) + '</div>';
+  const byDate = (a,b) => a.date < b.date ? 1 : -1;
+  const period = s.periodLines.slice().sort(byDate), outside = s.outside.slice().sort(byDate), paid = s.paid.slice().sort(byDate);
+  const heads = ["Date","Customer","Offer","Collected","Role on deal","Whop","Commission"];
+  let body = '<div class="sec">Owed this period · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + ' · ' + period.length + ' line' + (period.length === 1 ? "" : "s") + ' · ' + money(s.owedPeriod) + '</div><div class="tw">' + tableInner(heads, period.map(lineRow), {left:[1,2,4], empty:"Nothing owed in this period."}) + '</div>';
+  if(outside.length) body += '<div class="sec" style="margin-top:14px">Unpaid outside this period · ' + outside.length + ' line' + (outside.length === 1 ? "" : "s") + ' · ' + money(s.owedOutside) + '</div><div class="tw">' + tableInner(heads, outside.map(lineRow), {left:[1,2,4]}) + '</div>';
   if(paid.length) body += '<div class="sec" style="margin-top:14px">Paid · ' + paid.length + ' line' + (paid.length === 1 ? "" : "s") + ' · ' + money(s.paidAll) + '</div><div class="tw">' + tableInner(heads.concat(["Payout"]), paid.map(L => lineRow(L).concat([esc(fmtD(L.payout ? L.payout["Date Paid"] : "")) + ' <span class="mute">' + esc(String(L.payout ? L.payout["Payout ID"] : "")) + '</span>'])), {left:[1,2,4]}) + '</div>';
   if(p.roster && p.roster.notes) body += '<div class="sec" style="margin-top:14px">Roster note</div><div style="padding:0 20px 16px;font-size:12.5px;color:var(--ink-2)">' + esc(p.roster.notes) + '</div>';
   openDrawer(title(k), esc(Object.keys(p.roles).join(" + ")) + (p.roster ? "" : ' · <span class="pill chk">not on roster</span>') + ' · earned ' + money(s.earnedAll) + ' all time',
-    body, s.owed > 0.004 ? '<span style="font-size:13px">Owed now <b style="font-family:var(--mono)">' + money(s.owed) + '</b></span><button class="btn primary" id="dr-pay">Mark paid ' + money(s.owed) + '</button>' : '<span class="pill ok">Paid up</span>');
+    body, s.owedPeriod > 0.004 ? '<span style="font-size:13px">Owed this period <b style="font-family:var(--mono)">' + money(s.owedPeriod) + '</b></span><button class="btn primary" id="dr-pay">Mark paid ' + money(s.owedPeriod) + '</button>' : '<span class="pill ok">Nothing owed this period</span>');
   const b = document.getElementById("dr-pay"); if(b) b.onclick = () => confirmPayout(k);
 }
 function openDismissed(){
@@ -686,19 +711,19 @@ function renderL1(){
     '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email" value="' + esc(L1.q) + '">' +
     '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select>' +
     '<select id="f-offer"><option value="">All offers</option>' + offers.map(o => '<option value="' + esc(o) + '"' + (L1.offer === o ? ' selected' : '') + '>' + esc(o) + '</option>').join("") + '</select></div>' +
-    '<div class="tw"><table><thead><tr>' + th("Date","date") + '<th>Week</th>' + th("Customer","prospect",1) + th("Offer","offer",1) + th("Cash","cash") + '<th>Contracted</th><th class="l">Pay type</th><th>Whop</th><th>Whop paid</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
-    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(fmtD(d.week)), esc(d.prospect), esc(d.offer), money(d.cash), d.revenue ? money(d.revenue) : "—", esc(d.payType) || "—", whopPill(d), d.whop && has(d.whop["Whop Paid Date"]) ? esc(fmtD(d.whop["Whop Paid Date"])) : "—",
+    '<div class="tw"><table><thead><tr>' + th("Date","date") + '<th>Week</th>' + th("Customer","prospect",1) + th("Offer","offer",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th>Last payment</th><th class="l">Pay type</th><th>Whop</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
+    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(fmtD(d.week)), esc(d.prospect), esc(d.offer), money(d.cash), d.installments ? money(d.collected) + ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : money(d.collected), d.remaining > 0 ? money(d.remaining) : "—", d.lastPayment ? esc(fmtD(d.lastPayment)) : "—", esc(d.payType) || "—", whopPill(d),
       isPerson(d.closer) ? esc(title(d.closer)) : "—", d.closerComm ? money(d.closerComm) : "—", paidPill(d.closerPaid, d.closerComm) || "—",
       isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—", d.dmSetter ? esc(title(d.dmSetter)) : "—"]
-      .map((c,i) => '<td class="' + ([2,3,6,9,12,15].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="16" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
+      .map((c,i) => '<td class="' + ([2,3,8,10,13,16].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="17" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
     '</tbody></table></div></div>';
-  h += '<div class="note"><p><strong>Whop</strong> column: <span class="pill ok">Whop ✓</span> matched a real payment on amount, date and name · <span class="pill chk">probable</span> amount and date matched, name did not · <span class="pill bad">no payment</span> a form was filed and no money landed. Installment payments on plans are never commissionable and are not shown here. Refunds surface in the review queue.</p></div>';
+  h += '<div class="note"><p><strong>Collected</strong> is the cash on the EOC form; <strong>Paid to date</strong> adds every later installment Whop has taken on that customer\'s plan; <strong>Remaining</strong> is contracted minus paid to date. Commission is earned on each payment as it lands, so a closer on a $3,000 plan is paid $50 on the first $500 and the rest as installments clear.</p><p><strong>Whop</strong> column: <span class="pill ok">Whop ✓</span> matched a real payment on amount, date and name · <span class="pill chk">probable</span> amount and date matched, name did not · <span class="pill bad">no payment</span> a form was filed and no money landed. Installment payments on plans are never commissionable and are not shown here. Refunds surface in the review queue.</p></div>';
   const pg = document.getElementById("page-l1"); pg.innerHTML = h;
   document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); document.getElementById("f-q").focus(); const i = document.getElementById("f-q"); i.setSelectionRange(i.value.length, i.value.length); };
   document.getElementById("f-person").onchange = e => { L1.person = e.target.value; renderL1(); };
   document.getElementById("f-offer").onchange = e => { L1.offer = e.target.value; renderL1(); };
   pg.querySelectorAll("th.sort").forEach(t => t.onclick = () => { const k = t.dataset.key; if(L1.sort === k) L1.dir = L1.dir === "asc" ? "desc" : "asc"; else { L1.sort = k; L1.dir = k === "date" || k === "cash" ? "desc" : "asc"; } renderL1(); });
-  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Week (Thu)","Customer","Offer","Cash","Contracted","Pay type","Whop status","Whop paid","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.week, d.prospect, d.offer, d.cash, d.revenue, d.payType, d.whopStatus, d.whop ? d.whop["Whop Paid Date"] : "", title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
+  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Week (Thu)","Customer","Offer","Collected (initial)","Paid to date","Contracted","Remaining","Last payment","Pay type","Whop status","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.week, d.prospect, d.offer, d.cash, d.collected, d.revenue, d.remaining, d.lastPayment, d.payType, d.whopStatus, title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
 }
 
 /* ----- Ledger 2: payouts ----- */
@@ -747,17 +772,18 @@ function modal(ttl, body, okLabel, onOk){
 }
 function confirmPayout(k, onCancel){
   const p = S.people[k]; const s = personSummary(p);
-  if(s.owed <= 0.004){ toast(title(k) + " is paid up."); if(onCancel) onCancel(); return; }
+  if(s.owedPeriod <= 0.004){ toast(title(k) + " has nothing owed in this period."); if(onCancel) onCancel(); return; }
   const by = localStorage.getItem("hq.paidBy") || "";
   const fn = async () => {
     const paidBy = document.getElementById("md-by").value.trim(), notes = document.getElementById("md-notes").value.trim(), date = document.getElementById("md-date").value;
     if(!paidBy) throw new Error("Who sent it? Put a name in Paid by.");
     if(!/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error("Date needs to be YYYY-MM-DD.");
     localStorage.setItem("hq.paidBy", paidBy);
-    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owed*100)/100, period:S.fromD + " to " + S.toD, datePaid:date, lines:s.unpaid.map(L => L.id), paidBy, notes }, "Logged " + money(s.owed) + " to " + title(k));
+    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owedPeriod*100)/100, period:S.fromD + " to " + S.toD, datePaid:date, lines:s.periodLines.map(L => L.id), paidBy, notes }, "Logged " + money(s.owedPeriod) + " to " + title(k));
     closeDrawer();
   }; fn.cancel = onCancel;
-  modal("Mark " + title(k) + " paid", '<div class="kv"><b>Amount</b><span style="font-family:var(--mono);font-weight:600">' + money(s.owed) + '</span><b>Covers</b><span>' + s.unpaid.length + ' line' + (s.unpaid.length === 1 ? "" : "s") + (s.carried > 0.004 ? ' (' + money(s.carried) + ' carried from earlier periods)' : '') + '</span></div>' +
+  modal("Mark " + title(k) + " paid", '<div class="kv"><b>Amount</b><span style="font-family:var(--mono);font-weight:600">' + money(s.owedPeriod) + '</span><b>Period</b><span>' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + '</span><b>Covers</b><span>' + s.periodLines.length + ' line' + (s.periodLines.length === 1 ? "" : "s") + '</span></div>' +
+    (s.owedOutside > 0.004 ? '<div class="note warn" style="padding:8px 12px"><span>' + money(s.owedOutside) + ' more is unpaid outside this period (' + s.outside.length + ' line' + (s.outside.length === 1 ? "" : "s") + '). It is not included; widen the range to pay it.</span></div>' : '') +
     '<label>Date paid<input type="text" id="md-date" value="' + todayISO() + '"></label><label>Paid by<input type="text" id="md-by" value="' + esc(by) + '" placeholder="Your name"></label><label>Note (optional)<input type="text" id="md-notes" placeholder="Gusto, Zelle, partial, etc."></label><div class="err" id="md-err" hidden></div>' +
     '<div style="font-size:12px;color:var(--ink-3)">This writes one row to Ledger 2 and marks every line above as paid. Void it from Ledger 2 if it was a mistake.</div>', "Log payout", fn);
 }
