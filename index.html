@@ -266,7 +266,7 @@ label>input[type=password]{width:100%; margin-top:4px; padding:8px 10px; border:
    ===================================================================== */
 
 const CFG = {
-  API: "https://script.google.com/macros/s/AKfycbxzeYqOdDvu2m-iRU3Jx7qjSoHVzjSdLSgrbP_6dZZBTh0Z-z_W9zA3blEGXUp3O7pn/exec",   /* Apps Script web app /exec URL. Empty = the page cannot load. */
+  API: "https://script.google.com/macros/s/AKfycbzCl0eYklOYSwPwCg7Bz7F6vMhNCM_h5krtAYv4UaWd5WvGNZaoJFbh672KWHaNN2Lf/exec",   /* Apps Script web app /exec URL. Empty = the page cannot load. */
   /* No password hash lives here on purpose. This repo is PUBLIC, so a hash would be
      crackable offline and it IS the API token. The only check is server-side: the page
      sends what you type and the API accepts or rejects it against HQ_TOKEN.
@@ -355,7 +355,7 @@ function compute(){
   /* the call that produced a payment: latest non-cancelled call run by a roster CLOSER, on/before the payment (+1 day slop), within 60 days */
   const callFor = (ids, paidDate) => { const list = [].concat(...(ids || []).map(id => evByContact[id] || []));
     const live = list.filter(a => !/cancel/.test(a.status) && isCloser(a.rep) && a.date <= dayShift(paidDate, 1) && daysBetween(a.date, paidDate) <= 60).sort((x,y) => x.date < y.date ? 1 : -1);
-    return live[0] || null; };
+    return live.find(a => a.status !== "noshow") || live[0] || null; };   /* a held call beats a no-show, even an earlier one */
   const otherRepOn = (ids, paidDate) => { const list = [].concat(...(ids || []).map(id => evByContact[id] || [])); /* a non-closer ran the call (setter's calendar, admin) */
     return list.filter(a => !/cancel/.test(a.status) && isPerson(a.rep) && !isCloser(a.rep) && a.date <= dayShift(paidDate, 1) && daysBetween(a.date, paidDate) <= 60).sort((x,y) => x.date < y.date ? 1 : -1)[0] || null; };
   const contactName = ids => { for(const id of ids || []){ const c = contacts[id]; if(c && c.name) return c.name; } return ""; };
@@ -380,74 +380,76 @@ function compute(){
     const init = +pl.initial || 0, ren = +pl.renewal || 0;
     if(pl.type === "one_time") return init || null;
     const split = +m.split || +pl.split || 0; return split ? init + split * ren : null; };
+  const KNOWN_STATUS = { paid:1, open:1, refunded:1, failed:1, pending:1, void:1, draft:1, unresolved:1 };
+  S.unknownStatuses = [...new Set((F.payments || []).map(p => String(p.status)).filter(st => !KNOWN_STATUS[st]))];
+  /* every successful charge; a FULLY refunded charge is money that went back, so it earns nothing */
   const paid = (F.payments || []).filter(p => p.status === "paid" && +p.amount > 0).map(p => Object.assign({}, p, { amount:+p.amount, refunded:+p.refunded || 0, date: ptDate(p.paidAt || p.createdAt) })).filter(p => p.date);
-  const isCycle = p => p.reason === "subscription_cycle";
-  const paidByMem = {}; paid.forEach(p => { if(p.membership) (paidByMem[p.membership] = paidByMem[p.membership] || []).push(p); });
+  paid.forEach(p => { p.fullRefund = p.refunded >= p.amount - 0.005; });
   const failed = (F.payments || []).filter(p => p.status !== "paid" && p.failure).map(p => Object.assign({}, p, { date: ptDate(p.createdAt) }));
 
-  /* ---- Deals: one per upfront paid Whop payment ---- */
-  const upfront = paid.filter(p => !isCycle(p) && p.date >= DEALS_FROM).sort((a,b) => a.date < b.date ? -1 : 1);
-  S.dealRows = [];
-  upfront.forEach(p => {
-    const pid = p.id, date = p.date, email = p.email, m = mems[p.membership] || null, pl = m ? plans[m.plan] : plans[p.plan];
-    const names = [p.name].filter(n => n && n.length >= 3);
-    let closer = "", setter = "", tier = "", appt = null, ids = [], ghlName = "", note = ""; const flags = [];
-    /* 0. a human already answered */
-    const mm = manual[pid];
+  /* ---- Group by Whop MEMBERSHIP. The earliest successful charge on a membership is the anchor:
+          anchor dated on/after Deals from  -> a DEAL (the closer is matched here; later charges are its installments)
+          anchor dated before Deals from    -> a LEGACY PLAN (started before the tracker; matched the same way so its
+                                               installments landing since Deals from pay the closer)
+       Billing reason is NOT trusted for this: when the first charge fails and the retry succeeds, Whop labels the
+       retry subscription_cycle (Emma Wells, 2026-07-20), which would otherwise hide a real deal. ---- */
+  const byMem = {}; paid.forEach(p => { const k = p.membership || ("nomem|" + p.id); (byMem[k] = byMem[k] || []).push(p); });
+  Object.values(byMem).forEach(ps => ps.sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.paidAt || 0) - (b.paidAt || 0)));
+  const groups = Object.keys(byMem).map(k => ({ key:k, anchor:byMem[k][0], later:byMem[k].slice(1), since: byMem[k].filter(p => p.date >= DEALS_FROM && !p.fullRefund) }))
+    .filter(g => g.anchor.date >= DEALS_FROM || g.since.length)          /* pre-tracker plans only matter if they still pay */
+    .sort((a,b) => a.anchor.date < b.anchor.date ? -1 : 1);
+
+  /* match one payment to a closer: confirmed -> email -> name -> (form, deals only) -> nobody */
+  const matchCloser = (p, useForm) => {
+    const email = p.email, names = [p.name].filter(n => n && n.length >= 3);
+    let closer = "", setter = "", tier = "", appt = null, ids = [], ghlName = "", eoc = null; const flags = [];
+    const mm = manual[p.id];
     if(mm && isPerson(mm.closer)){ closer = mm.closer; setter = mm.setter; tier = "confirmed"; ids = mm.contactId ? [mm.contactId] : (byEmail[email] || []); ghlName = contactName(ids); }
-    /* 1. email: Whop email -> GHL contact -> the appointment -> Assigned User */
-    if(!closer && email && (byEmail[email] || []).length){ ids = byEmail[email]; ghlName = contactName(ids); appt = callFor(ids, date); if(appt){ closer = appt.rep; tier = "email"; } }
-    /* 2. name: Whop billing name -> GHL contact (exact name) -> the appointment */
-    if(!closer && (byName[squash(p.name)] || []).length){ const nid = byName[squash(p.name)]; const a = callFor(nid, date); if(a){ ids = nid; ghlName = ghlName || contactName(nid); appt = a; closer = a.rep; tier = "name"; } }
+    if(!closer && email && (byEmail[email] || []).length){ ids = byEmail[email]; ghlName = contactName(ids); appt = callFor(ids, p.date); if(appt){ closer = appt.rep; tier = "email"; } }
+    if(!closer && (byName[squash(p.name)] || []).length){ const nid = byName[squash(p.name)]; const a = callFor(nid, p.date); if(a){ ids = nid; ghlName = ghlName || contactName(nid); appt = a; closer = a.rep; tier = "name"; } }
+    if(!ghlName && ids.length) ghlName = contactName(ids);
     if(ghlName) names.push(ghlName);
-    /* 3. the End of Call form: the setter always; the closer when the calendar had no answer */
-    const eoc = findEoc(names, p.amount, date);
-    if(eoc){ eoc.used = true;
-      if(!closer && isPerson(eoc.closer)){ closer = eoc.closer; tier = "form"; }
-      else if(closer && isPerson(eoc.closer) && eoc.closer !== closer && tier !== "confirmed") flags.push({ kind:"closer-mismatch", form:eoc.closer, src:eoc.src });
-      if(isPerson(eoc.setter)) setter = eoc.setter; }
-    else if(isPerson(closer)) flags.push({ kind:"no-form" });
-    /* 4. nobody: build a suggestion from timing so the human just verifies */
+    if(useForm){
+      eoc = findEoc(names, p.amount, p.date);
+      if(eoc){ eoc.used = true;
+        if(!closer && isPerson(eoc.closer)){ closer = eoc.closer; tier = "form"; }
+        else if(closer && isPerson(eoc.closer) && eoc.closer !== closer && tier !== "confirmed") flags.push({ kind:"closer-mismatch", form:eoc.closer, src:eoc.src });
+        if(isPerson(eoc.setter)) setter = eoc.setter; }
+      else if(isPerson(closer)) flags.push({ kind:"no-form" }); }
     let suggestion = null;
     if(!closer){
-      const other = otherRepOn(ids, date);
+      const other = otherRepOn(ids, p.date);
       const fn0 = squash(String(p.name).split(/\s+/)[0]);
-      const score = e => (fn0 && fn0.length >= 3 && squash(String(e.prospect).split(/\s+/)[0]) === fn0 ? 0 : 1) * 4 + (Math.abs(e.cash - p.amount) < 1 ? 0 : 2) + Math.min(Math.abs(daysBetween(e.date, date)), 1);
-      const cands = eocs.filter(e => !e.used && e.closed && isPerson(e.closer) && Math.abs(daysBetween(e.date, date)) <= WIN).sort((a,b) => score(a) - score(b));
+      const score = e => (fn0 && fn0.length >= 3 && squash(String(e.prospect).split(/\s+/)[0]) === fn0 ? 0 : 1) * 4 + (Math.abs(e.cash - p.amount) < 1 ? 0 : 2) + Math.min(Math.abs(daysBetween(e.date, p.date)), 1);
+      const cands = useForm ? eocs.filter(e => !e.used && e.closed && isPerson(e.closer) && Math.abs(daysBetween(e.date, p.date)) <= WIN).sort((a,b) => score(a) - score(b)) : [];
       suggestion = { forms: cands.filter(e => score(e) < 6).slice(0,3), other, ghlName };   /* first name or same amount, never a random neighbour */
       flags.push({ kind:"unmatched" }); }
-    const prospect = nice(ghlName || (eoc && eoc.prospect) || p.name || email);
-    const total = contracted(m), memPaid = (paidByMem[p.membership] || []).filter(x => x.date >= date);
-    const planish = p.reason === "subscription_create" || (pl && pl.type === "renewal");
-    const payType = planish ? (total ? "Plan" : "Plan (open)") : "Upfront";
-    const key = "W|" + pid;
-    const d = { i:S.dealRows.length, key, pid, date, week:thuWeek(date), prospect, ghlName, whopName:p.name, email, closer, setter, tier, appt, eoc, flags, suggestion, contactId: ids[0] || "",
-      cash:p.amount, refunded:p.refunded || 0, payType, contract: total || p.amount, collected:p.amount, remaining: total ? Math.max(total - p.amount, 0) : null, installments:0, lastPayment:date, membership:p.membership, plan: pl ? pl.name : "",
-      closerComm:0, setterComm:0, lines:[], source:"whop", formRate: eoc ? eoc.rate : "" };
-    if(isPerson(closer)){ d.closerComm = r2(p.amount * rateFor(closer, d.formRate));
-      const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date, prospect, cash:p.amount, kind:"close" }; lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
-      if(isPerson(setter)){ d.setterComm = date >= FLAT_FROM ? setterFlat(setter) : r2(p.amount * (C.setterRateBefore || 0.05));
-        const SL = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date, prospect, cash:p.amount, kind: date >= FLAT_FROM ? "set-close" : "set-pct" }; lines.push(SL); d.lines.push(SL); P(setter).roles.Setter = 1; } }
-    S.dealRows.push(d);
-  });
+    return { closer, setter, tier, appt, ids, ghlName, eoc, flags, suggestion };
+  };
 
-  /* ---- Installments: a later payment on the SAME Whop membership pays that deal's closer as it lands ---- */
-  const dealByMem = {}; S.dealRows.forEach(d => { if(d.membership) dealByMem[d.membership] = d; });
-  S.orphanCycles = [];
-  paid.filter(isCycle).sort((a,b) => a.date < b.date ? -1 : 1).forEach(p => {
-    if(p.date < DEALS_FROM) return;
-    let d = dealByMem[p.membership] || null, closer = d ? d.closer : "", tier = d ? d.tier : "";
-    if(!isPerson(closer)){ const mm = manual[p.id]; if(mm && isPerson(mm.closer)){ closer = mm.closer; tier = "confirmed"; } }
-    if(d){ d.installments++; d.collected += p.amount; if(d.remaining !== null) d.remaining = Math.max(d.contract - d.collected, 0); if(p.date > d.lastPayment) d.lastPayment = p.date; }
-    if(!isPerson(closer)){ S.orphanCycles.push({ pid:p.id, date:p.date, amount:p.amount, name:p.name, email:p.email, legacy: !d }); return; }
-    if(!d){ /* plan that started before Deals from: its own row so the money is visible */
-      const m = mems[p.membership], pl = m ? plans[m.plan] : null;
-      d = { i:S.dealRows.length, key:"W|" + p.id, pid:p.id, date:p.date, week:thuWeek(p.date), prospect:nice(p.name || p.email), ghlName:"", whopName:p.name, email:p.email, closer, setter:"", tier, appt:null, eoc:null, flags:[], suggestion:null, contactId:"",
-        cash:p.amount, refunded:p.refunded || 0, payType:"Plan", contract: contracted(m) || p.amount, collected:p.amount, remaining:null, installments:0, lastPayment:p.date, membership:p.membership, plan: pl ? pl.name : "", closerComm:0, setterComm:0, lines:[], source:"whop", instOnly:true };
-      S.dealRows.push(d); dealByMem[p.membership] = d; }
-    const a = r2(p.amount * rateFor(closer, d.formRate));
-    const L = { id:"I|" + p.id + "|C", person:closer, role:"Closer", amount:a, dealKey:d.key, date:p.date, prospect:d.prospect, cash:p.amount, kind:"installment", pid:p.id }; lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
-    if(d.instOnly) d.closerComm += a;
+  S.dealRows = []; S.orphanCycles = []; S.legacyPlans = 0;
+  const addLine = (d, p, role, person, amount, kind, id) => { const L = { id, person, role, amount, dealKey:d.key, date:p.date, prospect:d.prospect, cash:p.amount, kind, pid:p.id }; lines.push(L); d.lines.push(L); P(person).roles[role] = 1; return L; };
+  groups.forEach(g => {
+    const p = g.anchor, legacy = p.date < DEALS_FROM, m = mems[p.membership] || null, pl = m ? plans[m.plan] : plans[p.plan];
+    const M = matchCloser(p, !legacy);
+    const total = contracted(m), planish = g.later.length > 0 || p.reason === "subscription_create" || (pl && pl.type === "renewal");
+    const key = "W|" + p.id;
+    const d = { i:S.dealRows.length, key, pid:p.id, date:p.date, week:thuWeek(p.date), prospect:nice(M.ghlName || (M.eoc && M.eoc.prospect) || p.name || p.email), ghlName:M.ghlName, whopName:p.name, email:p.email,
+      closer:M.closer, setter:M.setter, tier:M.tier, appt:M.appt, eoc:M.eoc, flags:M.flags, suggestion:M.suggestion, contactId:M.ids[0] || "",
+      cash:p.amount, refunded:p.refunded, fullRefund:p.fullRefund, payType: planish ? (total ? "Plan" : "Plan (open)") : "Upfront", contract: total || p.amount, collected:p.amount, remaining: total ? Math.max(total - p.amount, 0) : null,
+      installments:0, lastPayment:p.date, membership:p.membership, plan: pl ? pl.name : "", closerComm:0, setterComm:0, lines:[], source:"whop", legacy, formRate: M.eoc ? M.eoc.rate : "", refundedInst:[] };
+    if(legacy) S.legacyPlans++;
+    /* the anchor's own commission: only when it is a real deal inside the tracker window and the money stayed */
+    if(!legacy && !p.fullRefund && isPerson(d.closer)){ d.closerComm = r2(p.amount * rateFor(d.closer, d.formRate)); addLine(d, p, "Closer", d.closer, d.closerComm, "close", key + "|C");
+      if(isPerson(d.setter)){ d.setterComm = p.date >= FLAT_FROM ? setterFlat(d.setter) : r2(p.amount * (C.setterRateBefore || 0.05)); addLine(d, p, "Setter", d.setter, d.setterComm, p.date >= FLAT_FROM ? "set-close" : "set-pct", key + "|S"); } }
+    /* installments: every later charge on the same membership pays the same closer as it lands */
+    g.later.forEach(q => {
+      d.installments++; d.collected += q.amount; if(d.remaining !== null) d.remaining = Math.max(d.contract - d.collected, 0); if(q.date > d.lastPayment) d.lastPayment = q.date;
+      if(q.refunded > 0) d.refundedInst.push(q);
+      if(q.date < DEALS_FROM || q.fullRefund) return;
+      if(!isPerson(d.closer)){ S.orphanCycles.push({ pid:q.id, date:q.date, amount:q.amount, name:p.name, email:p.email, dealKey:key }); return; }
+      const a = r2(q.amount * rateFor(d.closer, d.formRate)); addLine(d, q, "Closer", d.closer, a, "installment", "I|" + q.id + "|C"); if(legacy) d.closerComm += a; });
+    S.dealRows.push(d);
   });
 
   /* ---- Forms that closed with no Whop money behind them ---- */
@@ -491,12 +493,26 @@ function buildReviews(){
   if(F.refreshedAt){ const ageH = (Date.now() - Date.parse(F.refreshedAt)) / 36e5;
     if(ageH > (S.C.staleHours || 2)) add("feed|stale|" + F.refreshedAt.slice(0,13), "U", "Data is " + (ageH < 48 ? Math.round(ageH) + " hours" : Math.round(ageH/24) + " days") + " old", ["Click <b>Refresh</b> at the top of this page. If the time in the sidebar does not move, the 15-minute trigger in the Apps Script has stopped.", "Patrick: run <span class=\"mono\">installTriggers()</span> in the SCA Commission HQ API script."], {locked:true}); }
   if(F.contactBacklog) add("feed|backlog", "I", "Still looking up customer names in GHL", ["The API looks up " + (F.contactFetches || "") + " GHL contacts per run and has more to do. Some deals may show the Whop name and \"nobody\" for a few refreshes.", "Nothing to do. Check back after the next refresh (15 min)."], {locked:true});
+  if((S.unknownStatuses || []).length) add("feed|whop-status|" + S.unknownStatuses.join(","), "U", "Whop is sending a payment status this page does not know: " + S.unknownStatuses.join(", "), ["Only charges with status <span class=\"mono\">paid</span> become deals. A new status could be money this page is ignoring (or counting) wrongly.", "Patrick: look at one of those payments on Whop and decide whether it counts as paid, then update KNOWN_STATUS / the paid filter in index.html."], {locked:true});
+  (S.C.roster || []).filter(r => r.active !== false && /closer/i.test(r.role || "")).forEach(r => { const nm = normName(r.name);
+    const onGhl = (F.users || []).some(u => firstName(u.name) === nm), onForm = true;   /* the form's Closer options are not readable via the API; see the note below */
+    if(!onGhl) add("roster|no-ghl-user|" + nm, "I", title(nm) + " is a closer on the roster but GHL has no user with that name", ["The closer is read from the Assigned User on the GHL appointment. If " + esc(title(nm)) + " has no GHL user, her calls can never be matched to her automatically; each of her deals will land in this queue instead.", "Fix on GHL: Settings → My Staff → add her as a user (first name exactly <b>" + esc(title(nm)) + "</b>) and put her on the booking calendar. Also make sure she is an option under <i>Closer</i> on the End of Call Report form.", "If she no longer closes, set her <span class=\"mono\">active: false</span> in hq-config.json and this disappears."], {kind:"roster"}); });
   if(!(F.eoc || []).length) add("feed|no-eoc", "I", "No End of Call Report responses came through", ["The form (End of Call Report) returned zero responses, so no setters can be named on new deals.", "Patrick: confirm EOC_FORM_ID in the script's properties points at the live form and that the account running the script owns it."], {locked:true});
 
   /* per-deal */
-  const recent = S.dealRows.filter(d => d.date >= cutoff && !d.instOnly);
+  const recent = S.dealRows.filter(d => (d.legacy ? d.lastPayment : d.date) >= cutoff);
   recent.forEach(d => d.flags.forEach(f => {
-    if(f.kind === "unmatched"){
+    if(f.kind === "unmatched" && d.legacy){
+      const since = d.lines.length ? d.lines : [], instAll = (S.orphanCycles || []).filter(c => c.dealKey === d.key), tot = instAll.reduce((a,c) => a + c.amount, 0);
+      const stillOwed = instAll.some(c => c.date > (S.paidThrough || ""));
+      add("legacy|" + d.pid, stillOwed ? "U" : "I", d.prospect + ": plan from " + fmtD(d.date) + ", " + instAll.length + " payment" + (instAll.length === 1 ? "" : "s") + " since " + fmtD(S.C.dealsFrom) + " (" + money(tot) + "), no closer named",
+        ["This plan started on " + fmtDY(d.date) + ", before the dashboard's first day, so there is no End of Call form for it. " + who(d) + " has paid " + instAll.map(c => money(c.amount) + " on " + fmtD(c.date)).join(", ") + " since then, and nobody earns on it yet.",
+         (sg => sg && sg.other ? "Note: " + esc(title(sg.other.rep)) + " (not a closer) ran her call on " + fmtD(sg.other.date) + "." : "The GHL calendar has no call for her under this email or name" + (d.ghlName ? " (GHL knows her as " + esc(d.ghlName) + ")" : "") + ".")(d.suggestion),
+         "Ask Ulani and Kirsty who closed her, or check the old Commissions Tracker for " + fmtD(d.date).split(" ")[0] + ".",
+         "Then click <b>Assign</b>, pick the closer, save. <b>One answer covers every installment</b> on this plan, past and future." + (stillOwed ? "" : " All of hers so far are dated on or before " + fmtD(S.paidThrough) + ", so they already count as paid; this fixes the record and catches the next installment.")],
+        { kind:"unmatched", dealKey:d.key, pid:d.pid, suggestion:null, action:"Assign" });
+    }
+    if(f.kind === "unmatched" && !d.legacy){
       const sg = d.suggestion || {}, f0 = sg.forms && sg.forms[0];
       const historical = S.paidThrough && d.date <= S.paidThrough;
       const steps = ["Whop received " + money(d.cash) + " on " + fmtDY(d.date) + " from " + who(d) + ". That email is not on a GHL contact who had a call with a closer, and no End of Call form matches the name."];
@@ -529,13 +545,20 @@ function buildReviews(){
     steps.push("Search Whop for her name and her email. If the money is there under a different name, that payment shows above as \"nobody is assigned\": confirm it there. If she never paid, tick this item to dismiss it. Nothing is owed on this form by itself.");
     add("form-only|" + e.id, e.pending ? "I" : "U", money(e.cash) + " logged for " + e.prospect + ", no Whop payment found", steps, { kind:"form-only" }); });
 
-  /* Refunds */
-  S.dealRows.filter(d => d.refunded > 0 && d.date >= cutoff).forEach(d => {
-    const paidLines = d.lines.filter(L => L.paid);
-    const paidHere = paidLines.some(L => L.payout && L.payout.source !== "through");   /* paid through THIS page; historical payouts are Info */
-    add("refund|" + d.key + "|" + d.refunded, paidHere ? "U" : "I", money(d.refunded) + " refunded on " + d.prospect + (paidLines.length ? ", commission already paid" : ""),
-      ["Whop refunded " + money(d.refunded) + " of " + money(d.cash) + ". " + (paidLines.length ? esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " was already paid on it." : "The commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet."),
-       "There is no clawback rule. Decide with Gigi whether to deduct it from the next payout, and note it in the payout note when you do.", "Then tick this item to dismiss it."], { kind:"refund", dealKey:d.key }); });
+  /* Refunds. A FULL refund earns nothing (the money went back), so it is only worth a look if the commission had already gone out.
+     A PARTIAL refund keeps its commission (no clawback rule) and is flagged so someone decides. Installment refunds are checked too. */
+  S.dealRows.filter(d => (d.legacy ? d.lastPayment : d.date) >= cutoff).forEach(d => {
+    const items = [];
+    if(d.refunded > 0) items.push({ p:{ id:d.pid, amount:d.cash, refunded:d.refunded, date:d.date, fullRefund:d.fullRefund }, what:"the " + (d.legacy ? "first" : "upfront") + " payment" });
+    (d.refundedInst || []).forEach(q => items.push({ p:q, what:"the installment of " + fmtD(q.date) }));
+    items.forEach(({p, what}) => {
+      const lineIds = new Set([d.key + "|C", d.key + "|S", "I|" + p.id + "|C"]);
+      const paidLines = d.lines.filter(L => lineIds.has(L.id) && L.pid === p.id || (L.id === d.key + "|C" || L.id === d.key + "|S") && p.id === d.pid).filter(L => L.paid);
+      const paidHere = paidLines.some(L => L.payout && L.payout.source !== "through");
+      if(p.fullRefund && !paidLines.length) return;   /* reversed before anyone was paid: nothing to do, the line simply does not exist */
+      add("refund|" + p.id + "|" + p.refunded, paidHere ? "U" : "I", money(p.refunded) + " refunded to " + d.prospect + (paidLines.length ? ", commission already paid" : ""),
+        ["Whop refunded " + money(p.refunded) + " of " + money(p.amount) + " on " + what + ". " + (p.fullRefund ? "That charge is fully reversed, so it earns nothing on this page." : "The payment kept " + money(p.amount - p.refunded) + "; commission stays on the full amount because there is no clawback rule.") + (paidLines.length ? " " + esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " was already paid out on it." : ""),
+         "Decide with Gigi whether to take it back on the next payout, and write it in that payout's note.", "Then tick this item to dismiss it."], { kind:"refund", dealKey:d.key }); }); });
 
   /* Reps not in the roster (hq-config.json in Drive) */
   Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => add("roster|" + k, "I", title(k) + " is not in the roster", ["Deals name <b>" + esc(title(k)) + "</b> but the roster (hq-config.json in Patrick's Drive) has no row for them, so default rates apply (closer " + Math.round((S.C.closerRate || 0.1)*100) + "%, setter $" + (S.C.setterClose || 50) + ").", "Patrick: add a roster row to hq-config.json in Drive; it applies on the next refresh. If this is a typo or the wrong person, reassign the deal instead."], {kind:"roster"}));
@@ -612,7 +635,7 @@ function renderPay(){
   document.getElementById("from").onchange = setRange; document.getElementById("to").onchange = setRange;
   document.getElementById("refresh").onclick = () => { toast("Pulling fresh data…"); load({refresh:true}).then(() => toast("Up to date")).catch(e => toast(e.message)); };
 
-  const dealsW = S.dealRows.filter(d => inRange(d.date) && !d.instOnly), linesW = S.lines.filter(L => inRange(L.date));
+  const dealsW = S.dealRows.filter(d => inRange(d.date) && !d.legacy), linesW = S.lines.filter(L => inRange(L.date));
   const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owedPeriod > 0.004).sort((a,b) => b.s.owedPeriod - a.s.owedPeriod);
   const totalOwed = names.reduce((s,x) => s + x.s.owedPeriod, 0);
   const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
@@ -639,8 +662,8 @@ function renderPay(){
   const cashW = dealsW.reduce((s,d) => s + d.cash, 0) + instW.reduce((s,L) => s + L.cash, 0);
   h += panel("Whop payments this period", '<div class="tw">' + tableInner(["Date","Customer","Collected","Remaining","Pay type","Payment","Closer","Closer comm","Setter","Setter comm"], tx, {left:[1,4,6,8], empty:"No Whop payments in this period."}) + '</div>', num(dealsW.length) + " deals" + (instW.length ? " + " + instW.length + " installment" + (instW.length === 1 ? "" : "s") : "") + " · " + money(cashW));
 
-  h += '<div class="note"><p><strong>How this works.</strong> Every line is a successful Whop payment; nothing else creates one. The customer’s name comes from GHL. The closer is whoever ran her appointment on the GHL calendar, found by her Whop email first, then by her name; if neither finds a call, the closer’s End of Call form names her; if nothing matches, the payment sits in <em>Needs review</em> with the most likely match pre-filled and nobody is paid until someone confirms. The End of Call form is the only source of the setter. Closers earn 10% of each payment as it lands (15% when the form says self-booked); setters earn $50 when a call they set closes. <strong>Owed this period</strong> is every commission line dated inside the selected range that has not been marked paid on Ledger 2. Everything dated on or before ' + esc(fmtDY(S.paidThrough)) + ' counts as paid.</p>' +
-    (S.orphanCycles.length ? (() => { const oc = S.orphanCycles, tot = oc.reduce((s,c) => s + c.amount, 0); return '<p style="color:var(--ink-3)">' + oc.length + ' installment' + (oc.length === 1 ? '' : 's') + ' (' + money(tot) + ') landed on plans that started before ' + esc(fmtD(S.C.dealsFrom)) + '. Nobody is owed on them until a closer is named: ' + oc.slice(0,6).map(c => esc(c.name || c.email) + ' ' + money(c.amount) + ' ' + esc(fmtD(c.date))).join(' · ') + (oc.length > 6 ? ' · +' + (oc.length - 6) + ' more' : '') + '</p>'; })() : '') +
+  h += '<div class="note"><p><strong>How this works.</strong> Every line is a successful Whop payment; nothing else creates one. The customer’s name comes from GHL. The closer is whoever ran her appointment on the GHL calendar, found by her Whop email first, then by her name; if neither finds a call, the closer’s End of Call form names her; if nothing matches, the payment sits in <em>Needs review</em> with the most likely match pre-filled and nobody is paid until someone confirms. The End of Call form is the only source of the setter. Closers earn 10% of each payment as it lands (15% when the form says self-booked); setters earn $50 when a call they set closes. <strong>Owed this period</strong> is every commission line dated inside the selected range that has not been marked paid on Ledger 2. Everything dated on or before ' + esc(fmtDY(S.paidThrough)) + ' counts as paid. Payment plans that started before ' + esc(fmtD(S.C.dealsFrom)) + ' are matched the same way on their first payment, and their installments since then pay that closer. A fully refunded charge earns nothing.</p>' +
+    (S.orphanCycles.length ? (() => { const oc = S.orphanCycles, tot = oc.reduce((s,c) => s + c.amount, 0), plans = new Set(oc.map(c => c.dealKey)).size; return '<p style="color:var(--ink-3)">' + oc.length + ' installment' + (oc.length === 1 ? '' : 's') + ' (' + money(tot) + ') on ' + plans + ' plan' + (plans === 1 ? '' : 's') + ' with no closer named yet. Each plan is one item in the review queue; answer it once and every installment follows.</p>'; })() : '') +
     '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for this period’s amount and marks those lines paid. Ticking a review item hides it for everyone. Data refreshes every 15 minutes; <strong>Refresh</strong> pulls it now.</p></div>';
   const pg = document.getElementById("page-pay"); pg.innerHTML = h;
   pg.querySelectorAll(".name-btn").forEach(b => b.onclick = () => openPerson(b.dataset.person));
@@ -686,25 +709,26 @@ function openDismissed(){
 const L1 = { q:"", person:"", sort:"date", dir:"desc" };
 function renderL1(){
   document.getElementById("pg-title").textContent = "Ledger 1 · Deals";
-  document.getElementById("pg-sub").textContent = "Every successful Whop payment since " + fmtDY(S.C.dealsFrom) + " · name from GHL · closer from the GHL calendar · setter from the End of Call form";
+  document.getElementById("pg-sub").textContent = "Every successful Whop payment since " + fmtDY(S.C.dealsFrom) + (S.legacyPlans ? " · plus " + S.legacyPlans + " payment plans that started earlier and are still paying" : "") + " · name from GHL · closer from the GHL calendar · setter from the End of Call form";
   document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv1">Download CSV</button>';
   const people = Object.keys(S.people).sort();
   let rows = S.dealRows.filter(d => (!L1.person || d.closer === L1.person || d.setter === L1.person) && (!L1.q || (d.prospect + " " + d.whopName + " " + d.closer + " " + d.setter + " " + d.email + " " + d.pid).toLowerCase().includes(L1.q.toLowerCase())));
   const keyf = { date:d => d.date, prospect:d => d.prospect.toLowerCase(), cash:d => d.cash, closer:d => d.closer, setter:d => d.setter }[L1.sort] || (d => d.date);
   rows.sort((a,b) => { const x = keyf(a), y = keyf(b); return (x < y ? -1 : x > y ? 1 : 0) * (L1.dir === "asc" ? 1 : -1); });
-  const total = rows.reduce((s,d) => s + d.collected, 0);
+  /* cash since Deals from only: a legacy plan's first payment predates the window, so count its installments, not its anchor */
+  const total = rows.reduce((s,d) => s + (d.legacy ? d.lines.reduce((a,L) => a + L.cash, 0) + (S.orphanCycles || []).filter(c => c.dealKey === d.key).reduce((a,c) => a + c.amount, 0) : d.collected), 0);
   const th = (label, key, left) => '<th class="sort ' + (left ? "l" : "") + '" data-key="' + key + '"' + (L1.sort === key ? ' data-dir="' + L1.dir + '"' : '') + '>' + label + '</th>';
-  let h = '<div class="panel"><div class="panel-head"><span>Deals</span><span class="r">' + num(rows.length) + ' of ' + num(S.dealRows.length) + ' · ' + money(total) + ' collected</span></div>' +
+  let h = '<div class="panel"><div class="panel-head"><span>Deals</span><span class="r">' + num(rows.length) + ' of ' + num(S.dealRows.length) + ' · ' + money(total) + ' collected since ' + esc(fmtD(S.C.dealsFrom)) + '</span></div>' +
     '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email, payment id" value="' + esc(L1.q) + '">' +
     '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select></div>' +
     '<div class="tw"><table><thead><tr>' + th("Date","date") + th("Customer","prospect",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th class="l">Pay type</th><th>Payment</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th></tr></thead><tbody>' +
-    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), custCell(d) + (d.whopName && squash(d.whopName) !== squash(d.prospect) ? '<div class="mute" style="font-size:11px">Whop: ' + esc(d.whopName) + '</div>' : ''), money(d.cash),
+    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)) + (d.legacy ? '<div><span class="pill chk" title="Started before the dashboard\u2019s first day; only installments since then count">plan from before ' + esc(fmtD(S.C.dealsFrom)) + '</span></div>' : ''), custCell(d) + (d.whopName && squash(d.whopName) !== squash(d.prospect) ? '<div class="mute" style="font-size:11px">Whop: ' + esc(d.whopName) + '</div>' : ''), d.legacy ? '<span class="mute">' + money(d.cash) + '</span>' : money(d.cash),
       /plan/i.test(d.payType) ? money(d.collected) + (d.installments ? ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : '') : "—", /plan/i.test(d.payType) && d.remaining !== null ? money(d.remaining) : "—", esc(d.payType), payPill(d),
       isPerson(d.closer) ? esc(title(d.closer)) : "—", d.closerComm ? money(d.closerComm) : "—", paidPill(d.closerPaid, d.closerComm) || "—",
       isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—"]
       .map((c,i) => '<td class="' + ([1,5,7,10].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="13" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
     '</tbody></table></div></div>';
-  h += '<div class="note"><p><strong>Payment</strong>: <span class="pill ok">Verified</span> Whop shows the charge as paid (only paid charges appear here) · <span class="pill bad">refunded</span> Whop refunded some or all of it. A closer with no name means nothing matched and the payment is in the review queue. How each closer was found (email, name, form, confirmed) is still checked on every load and is in the CSV. <strong>Paid to date / Remaining</strong> follow the subscription that is actually on Whop, whatever link the closer sent. Commission is earned on each payment as it lands.</p></div>';
+  h += '<div class="note"><p><strong>Payment</strong>: <span class="pill ok">Verified</span> Whop shows the charge as paid (only paid charges appear here) · <span class="pill bad">refunded</span> Whop refunded some or all of it. A closer with no name means nothing matched and the payment is in the review queue. How each closer was found (email, name, form, confirmed) is still checked on every load and is in the CSV. <strong>Paid to date / Remaining</strong> follow the subscription that is actually on Whop, whatever link the closer sent. Commission is earned on each payment as it lands. <span class="pill chk">plan from before ' + esc(fmtD(S.C.dealsFrom)) + '</span> marks a payment plan that started before this page\u2019s first day: its first payment is shown greyed for context and earns nothing here; every installment since ' + esc(fmtD(S.C.dealsFrom)) + ' pays the closer found for that plan. A fully refunded charge never earns anything.</p></div>';
   const pg = document.getElementById("page-l1"); pg.innerHTML = h;
   document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); const i = document.getElementById("f-q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); };
   document.getElementById("f-person").onchange = e => { L1.person = e.target.value; renderL1(); };
