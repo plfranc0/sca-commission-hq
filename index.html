@@ -193,6 +193,10 @@ th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{c
   .main{padding:18px 14px 50px}
   .topbar h1{font-size:24px}
 }
+.qi .d ol.steps{margin:6px 0 8px 18px; padding:0; display:flex; flex-direction:column; gap:4px}
+.qi .d ol.steps li{padding-left:2px}
+.qi .d .btn{margin-top:2px}
+label>input[type=password]{width:100%; margin-top:4px; padding:8px 10px; border:1px solid var(--hair); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit}
 @media print{.side,.ctl,.scrim,.drawer,.toast{display:none!important} .main{padding:0}}
 </style>
 </head>
@@ -213,7 +217,6 @@ th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{c
       <div id="sf-status"><span class="dot"></span>Loading</div>
       <div id="sf-fetched"></div>
       <div id="sf-write"></div>
-      <a id="sf-sheet" href="#" target="_blank" rel="noopener">Open the Sales Team HQ sheet</a>
     </div>
   </aside>
 
@@ -252,68 +255,48 @@ th.sort[data-dir="asc"]::after{content:" ↑"} th.sort[data-dir="desc"]::after{c
 <script>
 "use strict";
 /* =====================================================================
-   SCA Commission HQ
-   Reads the "SCA Commission HQ" Google Sheet live (gviz, anyone-with-link
-   viewer). Writes (payouts, dismissals, voids) go through a tiny Apps Script
-   web app bound to that sheet; the passphrase entered at the gate is the
-   write token, checked server-side against Script Property HQ_TOKEN.
+   SCA Commission HQ  v3  (2026-08-30)
+   No spreadsheet anywhere. The page asks the Apps Script API (hq-api.gs) for
+   { feeds, state }: feeds = Whop payments/memberships/plans, GHL events/users/
+   contacts, End of Call Report form responses; state = payouts, dismissals,
+   manual matches. Settings live in config.json next to this file; pre-8/26
+   End-of-Call rows are a frozen snapshot in legacy-eoc.json.
+   The whole page is behind one shared admin password (checked here by hash,
+   and again by the API on every call).
    ===================================================================== */
 
 const CFG = {
-  SID: "1penRbU53iKOGeYFJKSouE7d-YCq_lgyHrH29tUQPtK4",   /* SCA Sales Team HQ — Single Source of Truth (Maya's Commissions Tracker lives here) */
-  TABS: { roster:"HQ Roster", config:"HQ Config", payouts:"HQ Payouts", dismissed:"HQ Dismissed", maya:"Commissions Tracker" },
-  /* The four feed tabs are read straight from the Master Tracker (already link-shared),
-     so the page has data even before the HQ sheet's IMPORTRANGE mirrors are authorised. */
-  FEEDS: { "Deals":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Cash Log"},
-           "Calls":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"_calls"},
-           "Whop":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Whop Recon",range:"A10:Q1000"},
-           "Whop Payments":{sid:"1AaqCLsqpdhzktzE002UvN1aBGsMXajksak_w8qL_tos",tab:"Whop Payments"} },
-  /* Apps Script web app URL (…/exec). Empty = read-only mode with a banner. */
-  WEBAPP: "",
-  /* SHA-256 of the team passphrase. Change with:
-     python3 -c "import hashlib;print(hashlib.sha256(b'NEW').hexdigest())" */
-  PASS_HASH: "8bbd6399df87ce04dc3b01c112b6f4c49d61890d4e796488a518b684855bfeb6",
-  DEFAULTS: { closerRate:0.10, setterRateBefore:0.05, show:30, close:50, kaiaWeekly:150, flatFrom:"2026-08-27", staleHours:36, teamRate:0.035, lateDays:35 },
+  API: "https://script.google.com/macros/s/AKfycbxzeYqOdDvu2m-iRU3Jx7qjSoHVzjSdLSgrbP_6dZZBTh0Z-z_W9zA3blEGXUp3O7pn/exec",   /* Apps Script web app /exec URL. Empty = the page cannot load. */
+  /* No password hash lives here on purpose. This repo is PUBLIC, so a hash would be
+     crackable offline and it IS the API token. The only check is server-side: the page
+     sends what you type and the API accepts or rejects it against HQ_TOKEN.
+     Settings and deal history come from the API too, so this file holds no client data. */
   REVIEW_WINDOW_DAYS: 60
 };
-const SHEET_URL = "https://docs.google.com/spreadsheets/d/" + CFG.SID + "/edit";
 
 /* ---------------- state ---------------- */
-const S = { deals:[], calls:[], whop:[], whopPay:[], roster:[], payouts:[], dismissed:[], maya:{blocks:[], rows:[]}, config:{}, errors:{},
-            lines:[], people:{}, weeks:[], fromD:null, toD:null, fetched:null, page:"pay", token:"" };
+const S = { F:null, ST:{payouts:[],dismissed:[],matches:[],log:[]}, C:{}, legacy:[], errors:[],
+            dealRows:[], lines:[], people:{}, reviews:[], orphanCycles:[], fromD:null, toD:null, fetched:null, page:"pay", token:"" };
 
-/* ---------------- data ---------------- */
-async function gviz(tab, range){
-  const map = (window.HQ_TEST_MAP || CFG.FEEDS || {})[tab];
-  const sid = map ? map.sid : CFG.SID, sheet = map ? map.tab : tab, rg = map ? map.range : range;
-  const url = "https://docs.google.com/spreadsheets/d/" + sid + "/gviz/tq?tqx=out:json&headers=1&sheet=" +
-              encodeURIComponent(sheet) + (rg ? "&range=" + encodeURIComponent(rg) : "") + "&t=" + Date.now();
-  const res = await fetch(url);
-  if(!res.ok) throw new Error("Tab “" + tab + "”: HTTP " + res.status + ". Is the sheet shared with anyone-with-the-link (viewer)?");
-  const text = await res.text();
-  const open = text.indexOf("setResponse("), close = text.lastIndexOf(")");
-  if(open === -1 || close === -1) throw new Error("Tab “" + tab + "” returned an unexpected response.");
-  const d = JSON.parse(text.slice(open + 12, close));
-  if(d.status !== "ok") throw new Error("Tab “" + tab + "”: " + JSON.stringify(d.errors || d.status));
-  const cols = d.table.cols.map(c => (c.label || c.id || "").trim());
-  return d.table.rows.map(r => { const o = {}; cols.forEach((name, i) => { const c = r.c[i]; o[name] = c ? c.v : null; }); return o; })
-    .filter(o => Object.values(o).some(v => v !== null && v !== ""));
-}
-const DATE_COLS = ["Week (Thu)","Call Date","Whop Paid Date","Date Paid","Paid Date","Period","Dismissed At","Logged At"];
-const gvDate = v => { const m = /^Date\((\d+),(\d+),(\d+)/.exec(String(v));
-  return m ? m[1]+"-"+String(+m[2]+1).padStart(2,"0")+"-"+String(+m[3]).padStart(2,"0") : String(v); };
-function isoRows(rows){ rows.forEach(r => DATE_COLS.forEach(k => { if(k in r && r[k] !== null && r[k] !== "") r[k] = gvDate(r[k]); })); return rows; }
-/* Cash Log money can arrive as a number or as text like "$3,000" / "3k". */
-const amt = v => { if(typeof v === "number") return isFinite(v) ? v : 0;
-  let s = String(v||"").trim().toLowerCase().replace(/[$,\s]/g,""); if(!s) return 0;
-  const k = /k$/.test(s); s = s.replace(/k$/,""); const x = parseFloat(s); return isFinite(x) ? (k ? x*1000 : x) : 0; };
+/* ---------------- helpers ---------------- */
 const has = v => v !== null && v !== undefined && v !== "";
 const normName = s => String(s||"").trim().toUpperCase();
-const ARTIFACT = /^\(UNASSIGNED\)$|^NONE$|^N\/A$|^-+$/i;
+const firstName = s => normName(String(s||"").trim().split(/\s+/)[0]);
+const ARTIFACT = /^\(UNASSIGNED\)$|^NONE$|^N\/A$|^-+$|^SELF/i;
 const isPerson = s => has(s) && !ARTIFACT.test(normName(s));
-const truthy = v => v === true || /^true$|^yes$|^1$/i.test(String(v||"").trim());
-
-/* ---------------- format ---------------- */
+const squash = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
+function lev(a, b){ if(a === b) return 0; const m = a.length, n = b.length; if(!m || !n) return m + n; let prev = Array.from({length:n+1}, (_, j) => j);
+  for(let i = 1; i <= m; i++){ const cur = [i]; for(let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1)); prev = cur; } return prev[n]; }
+/* "Teena Walekr" ~ "Teena Walker", "Char Dalton" ~ "Charlesia Dalton", "Yvonne Figueroa solario" ~ "Yvonne Solorio"; NOT "Gabriela Rodriguez" ~ "Gabriela Sandoval" */
+function nameLike(a, b){ const A = squash(a), B = squash(b); if(!A || !B) return false; if(A === B) return true;
+  const pa = String(a).trim().toLowerCase().split(/\s+/).map(squash).filter(Boolean), pb = String(b).trim().toLowerCase().split(/\s+/).map(squash).filter(Boolean);
+  if(!pa.length || !pb.length) return false;
+  const fa = pa[0], fb = pb[0], firstOk = fa.length >= 3 && fb.length >= 3 && (fa === fb || fa.startsWith(fb) || fb.startsWith(fa) || lev(fa, fb) <= 1);
+  if(!firstOk) return false;
+  const la = pa.slice(1), lb = pb.slice(1); if(!la.length || !lb.length) return true;
+  return la.some(x => lb.some(y => x === y || (x.length >= 4 && y.length >= 4 && (x.startsWith(y) || y.startsWith(x) || lev(x, y) <= 2)))); }
+/* GHL and Whop store names lowercase; show them capitalised without mangling names typed with capitals */
+const nice = s => { const t = String(s||""); return /[A-Z]/.test(t) ? t : title(t); };
 const money = v => (v === null || v === undefined || !isFinite(v)) ? "—" : (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: (Math.round(Math.abs(v)*100)%100) ? 2 : 0, maximumFractionDigits:2});
 const num = v => (v === null || v === undefined || !isFinite(v)) ? "—" : Math.round(v).toLocaleString("en-US");
 const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -321,315 +304,261 @@ const fmtD = iso => { const p = String(iso||"").split("-"); return p.length === 
 const fmtDY = iso => { const p = String(iso||"").split("-"); return p.length === 3 ? MON[+p[1]-1] + " " + (+p[2]) + ", " + p[0] : String(iso||"—"); };
 const title = s => String(s||"").toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const dayShift = (iso, d) => { const p = String(iso).split("-"); if(p.length !== 3) return iso;
-  const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2] + d)); return t.toISOString().slice(0,10); };
-const todayISO = () => { const t = new Date(); return t.getFullYear() + "-" + String(t.getMonth()+1).padStart(2,"0") + "-" + String(t.getDate()).padStart(2,"0"); };
-/* Thursday-anchored week containing an ISO date */
-const thuWeek = iso => { const p = String(iso).split("-"); if(p.length !== 3) return iso;
-  const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2])); const back = (t.getUTCDay() - 4 + 7) % 7; t.setUTCDate(t.getUTCDate() - back); return t.toISOString().slice(0,10); };
-const wkLabel = w => "Thu " + fmtD(w) + " – Wed " + fmtD(dayShift(w, 6));
+const dayShift = (iso, d) => { const p = String(iso).split("-"); if(p.length !== 3) return iso; const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2] + d)); return t.toISOString().slice(0,10); };
+const PT = { timeZone:"America/Los_Angeles" };
+const ptDate = x => { if(!x) return ""; const d = typeof x === "number" ? new Date(x * (x < 1e12 ? 1000 : 1)) : new Date(x); return isNaN(d) ? "" : d.toLocaleDateString("en-CA", PT); };
+const todayISO = () => new Date().toLocaleDateString("en-CA", PT);
+const thuWeek = iso => { const p = String(iso).split("-"); if(p.length !== 3) return iso; const t = new Date(Date.UTC(+p[0], +p[1]-1, +p[2])); const back = (t.getUTCDay() - 4 + 7) % 7; t.setUTCDate(t.getUTCDate() - back); return t.toISOString().slice(0,10); };
 const inRange = d => { const x = String(d||""); return x >= S.fromD && x <= S.toD; };
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+const r2 = x => Math.round(x * 100) / 100;
 
 /* ---------------- load ---------------- */
-async function load(){
-  const T = CFG.TABS;
-  const tabs = ["Deals","Calls","Whop","Whop Payments",T.roster,T.payouts,T.dismissed,T.config,T.maya];
-  const out = await Promise.all(tabs.map(t => gviz(t).catch(e => e)));
-  const pick = (i, key) => { if(out[i] instanceof Error){ S.errors[key] = out[i].message; return []; } delete S.errors[key]; return isoRows(out[i]); };
-  S.deals = pick(0,"Deals"); S.calls = pick(1,"Calls"); S.whop = pick(2,"Whop"); S.whopPay = pick(3,"Whop Payments");
-  S.roster = pick(4,"Roster"); S.payouts = pick(5,"Payouts").filter(r => has(r["Payout ID"])); S.dismissed = pick(6,"Dismissed");
-  S.maya = parseMaya(pick(8,"Maya"));
-  S.config = {}; pick(7,"Config").forEach(r => { if(has(r["Setting"])) S.config[String(r["Setting"]).trim()] = r["Value"]; });
-  S.fetched = new Date();
-  compute();
-  renderAll();
+async function api(params, post){
+  if(!CFG.API || /__API_URL__/.test(CFG.API)) throw new Error("The API URL is not set (CFG.API in index.html). Deploy hq-api.gs as a web app and paste its /exec URL.");
+  let res, txt;
+  try {
+    if(post) res = await fetch(CFG.API, { method:"POST", body: JSON.stringify(Object.assign({ token:S.token }, post)), headers:{ "Content-Type":"text/plain;charset=utf-8" }, redirect:"follow" });
+    else res = await fetch(CFG.API + "?" + new URLSearchParams(Object.assign({ token:S.token }, params)).toString(), { redirect:"follow" });
+    txt = await res.text();
+  } catch(e){ throw new Error("Could not reach the API: " + e.message); }
+  let j; try { j = JSON.parse(txt); } catch(e){ throw new Error("The API returned something that is not JSON (HTTP " + res.status + "). Is the web app deployed as Execute as Me / Anyone?"); }
+  if(!j.ok){ if(/bad token/.test(j.error || "")){ try { localStorage.removeItem("hq.tok"); } catch(_){} S.token = ""; } throw new Error(j.error || "API error"); }
+  return j;
+}
+async function load(opts){
+  const j = await api(opts && opts.refresh ? { action:"refresh" } : { action:"data" });
+  S.F = j.feeds; S.ST = j.state || S.ST; S.C = j.config || {}; S.legacy = j.legacy || []; S.fetched = new Date();
+  if(!S.C.roster) throw new Error("The API answered but sent no settings. Re-push hq-api.gs (its CONFIG block is empty).");
+  compute(); renderAll();
 }
 
-/* ---------------- Maya's Commissions Tracker ----------------
-   Human-shaped: blocks per pay period ("Week Of" filled only on the first row), deal rows,
-   then a footer of label rows in the Date column (Total Cash Collected:, Closer Comms…,
-   Approved by Maya, Wire Transfer Sent, Wire Send Date / Time) with the value in Customer Name. */
-const LABELS = /^(total cash|commissions$|closer comms|setter comms|team comms|total commissions|approved by maya|wire transfer sent|wire send date)/i;
-function mdy(v){ /* "7/20/2026", "7/21/2026 12:24:49", "8/14", or a gviz Date(...) */
-  if(/^Date\(/.test(String(v))) return gvDate(v);
-  const m = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/.exec(String(v||"").trim()); if(!m) return "";
-  const y = m[3] ? (m[3].length === 2 ? "20" + m[3] : m[3]) : "2026";
-  return y + "-" + m[1].padStart(2,"0") + "-" + m[2].padStart(2,"0"); }
-function parseMaya(rows){
-  const blocks = [], all = []; let b = null;
-  rows.forEach(r => {
-    const wk = String(r["Week Of"]||"").trim(), dt = String(r["Date"]||"").trim(), name = String(r["Customer Name"]||"").trim();
-    if(wk){ const m = /^(\d{1,2}\/\d{1,2})\s*-\s*(\d{1,2}\/\d{1,2})/.exec(wk);
-      b = { label: wk, from: m ? mdy(m[1]) : "", to: m ? mdy(m[2]) : "", approved:null, wireSent:null, wireDate:"", rows:[] }; blocks.push(b); }
-    if(!b) return;
-    if(LABELS.test(dt)){
-      if(/^approved by maya/i.test(dt)) b.approved = truthy(name);
-      if(/^wire transfer sent/i.test(dt)) b.wireSent = truthy(name);
-      if(/^wire send date/i.test(dt)) b.wireDate = name;
-      return; }
-    if(!name || LABELS.test(name)) return;
-    const row = { block:b, period:b.label, date: mdy(r["Date"]) || b.from, name, email:String(r["Email"]||"").trim().toLowerCase(), cash: amt(r["Gross Cash Collected"]),
-      plan:String(r["Installment Payment"]||"").trim(), isInstallment: truthy(r["Installment Payment"]), offer:String(r["Offer"]||"").trim(), method:String(r["Payment Method"]||"").trim(),
-      closer: normName(r["Closer"]), setter: normName(r["Setter"]), triage: String(r["Triage Completed?"]||"").trim(), approved: truthy(r["Approved By Maya"]), notes:String(r["Notes"]||""), matched:null };
-    b.rows.push(row); all.push(row); });
-  return { blocks, rows: all };
-}
-/* name similarity for matching Maya's hand-typed names ("Pav", "Teena", card-holder names) to deals */
-const squash = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
-function nameLike(a, b){ const A = squash(a), B = squash(b); if(!A || !B) return false; if(A === B) return true;
-  const fa = squash(String(a).trim().split(/\s+/)[0]), fb = squash(String(b).trim().split(/\s+/)[0]);
-  return (A.length >= 3 && (B.startsWith(A) || A.startsWith(B))) || (fa.length >= 3 && fa === fb); }
-
-/* ---------------- model ---------------- */
-function cfgNum(key, dflt){ const v = S.config[key]; const x = typeof v === "number" ? v : parseFloat(String(v||"")); return isFinite(x) ? x : dflt; }
-function cfgDate(key, dflt){ const v = S.config[key]; return has(v) ? gvDate(v) : dflt; }
-
-function rosterFor(name){
-  const r = S.roster.find(x => normName(x["Name"]) === name);
-  if(!r) return null;
-  return { name, role: String(r["Role"]||""), closerRate: amt(r["Closer Rate"]) || 0, show: amt(r["Show $"]), close: amt(r["Close $"]),
-           weekly: amt(r["Weekly $"]), active: r["Active"] === null ? true : truthy(r["Active"]), notes: String(r["Notes"]||""), onRoster:true };
-}
+/* ======================= MODEL ======================= */
+function rosterFor(name){ const r = (S.C.roster || []).find(x => normName(x.name) === name); return r ? Object.assign({ onRoster:true }, r) : null; }
+const isCloser = n => { const ro = rosterFor(n); return !!ro && /closer/i.test(ro.role || ""); };
 
 function compute(){
-  const D = CFG.DEFAULTS;
-  const FLAT_FROM = cfgDate("Setter flat model from", D.flatFrom);
-  const KAIA_FROM = cfgDate("Kaia weekly from", FLAT_FROM);
-  const SETTER_BEFORE = cfgNum("Setter rate (before)", D.setterRateBefore);
-  const TEAM_RATE = cfgNum("Team commission rate", D.teamRate), TEAM_TO = normName(S.config["Team commission to"] || "");
-  const INSTALLMENTS_ON = !/^(no|false|0)$/i.test(String(S.config["Installments commissionable"] ?? "yes").trim());
-  S.teamUnassigned = [];
+  const F = S.F, C = S.C, today = todayISO();
+  const PAID_THROUGH0 = C.paidThrough || "", DEALS_FROM = C.dealsFrom || "2026-07-01", FLAT_FROM = C.flatFrom || "2026-08-27", WIN = C.matchWindowDays || 3;
+  const rateFor = (closer, formRate) => { if(/15/.test(String(formRate||""))) return C.selfBookedRate || 0.15; const ro = rosterFor(closer); return ro && ro.closerRate ? ro.closerRate : (C.closerRate || 0.10); };
+  const setterFlat = setter => { const ro = rosterFor(setter); return ro && ro.close ? ro.close : (C.setterClose || 50); };
+  const people = {}, lines = [];
+  const P = name => { if(!people[name]) people[name] = { name, roster: rosterFor(name), roles:{}, lines:[] }; return people[name]; };
 
-  /* Whop status per deal: prospect + call date, ±1 day tolerance */
-  const wmap = {};
-  S.whop.forEach(r => { const nm = normName(r["Prospect"]), cd = String(r["Call Date"]||""); if(!nm || !cd) return;
-    [0,-1,1].forEach((d,i) => { const k = nm + "|" + dayShift(cd, d); if(i === 0 || !wmap[k]) wmap[k] = r; }); });
+  /* ---- GHL: users, contacts, events ---- */
+  const userName = {}; (F.users || []).forEach(u => userName[u.id] = u.name || u.email || u.id);
+  const contacts = F.contacts || {}, byEmail = F.byEmail || {}, byName = F.byName || {};
+  const ignore = new Set((C.ignoreCalendars || []).map(squash));
+  const evByContact = {};
+  (F.events || []).forEach(e => { if(ignore.has(squash(e.cal))) return; const a = { id:e.id, date: ptDate(e.start), status:e.status, cal:e.cal, contactId:e.contactId, rep: firstName(userName[e.userId] || ""), userId:e.userId };
+    if(!a.date || !a.contactId) return; (evByContact[a.contactId] = evByContact[a.contactId] || []).push(a); });
+  /* the call that produced a payment: latest non-cancelled call run by a roster CLOSER, on/before the payment (+1 day slop), within 60 days */
+  const callFor = (ids, paidDate) => { const list = [].concat(...(ids || []).map(id => evByContact[id] || []));
+    const live = list.filter(a => !/cancel/.test(a.status) && isCloser(a.rep) && a.date <= dayShift(paidDate, 1) && daysBetween(a.date, paidDate) <= 60).sort((x,y) => x.date < y.date ? 1 : -1);
+    return live[0] || null; };
+  const otherRepOn = (ids, paidDate) => { const list = [].concat(...(ids || []).map(id => evByContact[id] || [])); /* a non-closer ran the call (setter's calendar, admin) */
+    return list.filter(a => !/cancel/.test(a.status) && isPerson(a.rep) && !isCloser(a.rep) && a.date <= dayShift(paidDate, 1) && daysBetween(a.date, paidDate) <= 60).sort((x,y) => x.date < y.date ? 1 : -1)[0] || null; };
+  const contactName = ids => { for(const id of ids || []){ const c = contacts[id]; if(c && c.name) return c.name; } return ""; };
 
-  /* Installments from Whop Payments, keyed by email: a plan's later payments (subscription_cycle) */
-  const cycles = {};
-  S.whopPay.forEach(r => { const em = String(r["Email"]||"").trim().toLowerCase(); if(!em || !/subscription_cycle/.test(String(r["Billing Reason"]||""))) return;
-    (cycles[em] = cycles[em] || []).push({ date: gvDate(r["Paid Date"]), amount: amt(r["Amount"]) - amt(r["Refunded"]), name: String(r["Billing Name"]||r["Enrollment Name"]||""), email: em, used:false }); });
+  /* ---- End of Call forms: live form responses + the frozen pre-8/26 snapshot ---- */
+  const eocs = [].concat((F.eoc || []).map(e => ({ src:"form", id:e.id, date:String(e.date||"").slice(0,10), prospect:e.prospect, closer:firstName(e.closer), setter: isPerson(e.setter) ? firstName(e.setter) : "", outcome:e.outcome, closed:/^closed/i.test(e.outcome), cash:+e.cash || 0, contract:+e.contract || 0, rate:e.rate || "", used:false })),
+                         (S.legacy || []).map((e, i) => ({ src:"legacy", id:"L" + i, date:e.date, prospect:e.prospect, closer:firstName(e.closer), setter: isPerson(e.setter) ? firstName(e.setter) : "", outcome:e.outcome, closed:e.cash > 0, cash:+e.cash || 0, contract:+e.contract || 0, rate:"", used:false })))
+    .filter(e => e.prospect && /^\d{4}-\d\d-\d\d$/.test(e.date));
+  /* the call can sit up to 7 days BEFORE the payment (plans get paid a few days later) or WIN days after it */
+  const near = (e, date) => daysBetween(e.date, date) >= -WIN && daysBetween(e.date, date) <= 7;
+  const findEoc = (names, amount, date) => eocs.find(e => !e.used && e.closed && Math.abs(e.cash - amount) < 1 && near(e, date) && names.some(n => nameLike(n, e.prospect)))
+                                        || eocs.find(e => !e.used && e.closed && near(e, date) && names.some(n => nameLike(n, e.prospect))) || null;
 
-  const people = {};
-  const P = name => { if(!people[name]){ const ro = rosterFor(name); people[name] = { name, roster: ro, roles:{}, lines:[] }; } return people[name]; };
-  const lines = [];   /* every commission line: {id, person, role, amount, dealKey, date, week, prospect, offer, cash, kind} */
+  /* ---- manual matches ---- */
+  const manual = {}; (S.ST.matches || []).forEach(m => { manual[m.paymentId] = m; });
 
-  /* Deals from the Cash Log */
-  S.dealRows = S.deals.map((r, i) => {
-    const date = String(r["Call Date"]||""), week = has(r["Week (Thu)"]) ? String(r["Week (Thu)"]) : thuWeek(date);
-    const prospect = String(r["Prospect"]||"").trim(), closer = normName(r["Closer"]), setter = normName(r["Setter"]);
-    const cash = amt(r["Cash Collected"]), revenue = amt(r["Revenue Contracted"]);
-    const flat = week >= FLAT_FROM;
-    const key = "D|" + date + "|" + normName(prospect) + "|" + closer;
-    const w = wmap[normName(prospect) + "|" + date] || null;
-    /* the recon job runs once a day at 6 AM PT, so a deal filed today has no row yet: that is pending, not missing */
-    const whopStatus = w ? String(w["Recon Status"]||"") : (S.whop.length ? (daysBetween(date, todayISO()) <= 2 ? "PENDING RECON" : "NOT ON WHOP") : "");
-    const refunded = w ? amt(w["Whop Refunded"]) : 0;
-    const email = w ? String(w["Whop Email"]||"").trim().toLowerCase() : "";
-    const firstPaid = w && has(w["Whop Paid Date"]) ? String(w["Whop Paid Date"]) : date;
-    const later = (email && cycles[email] ? cycles[email] : []).filter(c => c.date > firstPaid);
-    const collected = cash + later.reduce((s,c) => s + c.amount, 0);
-    const lastPayment = later.length ? later.map(c => c.date).sort().pop() : (w && has(w["Whop Paid Date"]) ? String(w["Whop Paid Date"]) : "");
-    const remaining = Math.max(revenue - collected, 0);
-    const d = { i, key, date, week, prospect, closer, setter, offer:String(r["Offer"]||""), payType:String(r["Pay Type"]||""), cash, revenue,
-                collected, remaining, lastPayment, installments: later.length, email,
-                flat, whop:w, whopStatus, refunded, closerComm:0, setterComm:0, dmSetter: closer === "KAIA" ? "KAIA" : "", lines:[] };
-    /* closer line */
-    if(isPerson(closer)){
-      const ro = rosterFor(closer); const rate = ro && ro.closerRate ? ro.closerRate : D.closerRate;
-      const logged = amt(r["Closer Commission"]);
-      d.closerComm = logged > 0 ? logged : Math.round(cash * rate * 100) / 100;
-      const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date, week, prospect, offer:d.offer, cash, kind:"close" };
-      lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
-    }
-    /* setter line: flat model = $50 on a close (replaces the $30 show); before = % of cash */
-    if(isPerson(setter)){
-      const ro = rosterFor(setter);
-      d.setterComm = flat ? (ro && ro.close ? ro.close : D.close) : (amt(r["Setter Commission"]) || Math.round(cash * SETTER_BEFORE * 100) / 100);
-      const L = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date, week, prospect, offer:d.offer, cash, kind: flat ? "set-close" : "set-pct" };
-      lines.push(L); d.lines.push(L); P(setter).roles.Setter = 1;
-    }
-    /* team line (3.5% on the Commissions Tracker) */
-    if(TEAM_RATE > 0 && cash > 0){ const a = Math.round(cash * TEAM_RATE * 100) / 100;
-      if(TEAM_TO){ const L = { id:key+"|T", person:TEAM_TO, role:"Team", amount:a, dealKey:key, date, week, prospect, offer:d.offer, cash, kind:"team" }; lines.push(L); d.lines.push(L); P(TEAM_TO).roles.Team = 1; }
-      else S.teamUnassigned.push({ date, amount:a, prospect }); }
-    /* installments: the closer earns her rate on each later payment as it lands (Maya's practice) */
-    if(INSTALLMENTS_ON && isPerson(closer)) later.forEach(c => { c.used = true;
-      const ro = rosterFor(closer); const rate = ro && ro.closerRate ? ro.closerRate : D.closerRate; const a = Math.round(c.amount * rate * 100) / 100;
-      const L = { id:"I|" + c.date + "|" + normName(prospect) + "|" + closer + "|C", person:closer, role:"Closer", amount:a, dealKey:key, date:c.date, week:thuWeek(c.date), prospect, offer:"Installment · " + d.offer, cash:c.amount, kind:"installment" };
-      lines.push(L); d.lines.push(L);
-      if(TEAM_RATE > 0){ const t = Math.round(c.amount * TEAM_RATE * 100) / 100;
-        if(TEAM_TO){ const TL = { id:"I|" + c.date + "|" + normName(prospect) + "|" + closer + "|T", person:TEAM_TO, role:"Team", amount:t, dealKey:key, date:c.date, week:thuWeek(c.date), prospect, offer:"Installment · " + d.offer, cash:c.amount, kind:"team" }; lines.push(TL); d.lines.push(TL); }
-        else S.teamUnassigned.push({ date:c.date, amount:t, prospect }); } });
-    return d;
+  /* ---- Whop: plans, memberships, payments ---- */
+  const plans = {}; (F.plans || []).forEach(p => plans[p.id] = p);
+  const mems = {}; (F.memberships || []).forEach(m => mems[m.id] = m);
+  /* Whop returns prices as strings ("500.0"); coerce or + concatenates */
+  const contracted = m => { const pl = m ? plans[m.plan] : null; if(!pl) return null;
+    const init = +pl.initial || 0, ren = +pl.renewal || 0;
+    if(pl.type === "one_time") return init || null;
+    const split = +m.split || +pl.split || 0; return split ? init + split * ren : null; };
+  const paid = (F.payments || []).filter(p => p.status === "paid" && +p.amount > 0).map(p => Object.assign({}, p, { amount:+p.amount, refunded:+p.refunded || 0, date: ptDate(p.paidAt || p.createdAt) })).filter(p => p.date);
+  const isCycle = p => p.reason === "subscription_cycle";
+  const paidByMem = {}; paid.forEach(p => { if(p.membership) (paidByMem[p.membership] = paidByMem[p.membership] || []).push(p); });
+  const failed = (F.payments || []).filter(p => p.status !== "paid" && p.failure).map(p => Object.assign({}, p, { date: ptDate(p.createdAt) }));
+
+  /* ---- Deals: one per upfront paid Whop payment ---- */
+  const upfront = paid.filter(p => !isCycle(p) && p.date >= DEALS_FROM).sort((a,b) => a.date < b.date ? -1 : 1);
+  S.dealRows = [];
+  upfront.forEach(p => {
+    const pid = p.id, date = p.date, email = p.email, m = mems[p.membership] || null, pl = m ? plans[m.plan] : plans[p.plan];
+    const names = [p.name].filter(n => n && n.length >= 3);
+    let closer = "", setter = "", tier = "", appt = null, ids = [], ghlName = "", note = ""; const flags = [];
+    /* 0. a human already answered */
+    const mm = manual[pid];
+    if(mm && isPerson(mm.closer)){ closer = mm.closer; setter = mm.setter; tier = "confirmed"; ids = mm.contactId ? [mm.contactId] : (byEmail[email] || []); ghlName = contactName(ids); }
+    /* 1. email: Whop email -> GHL contact -> the appointment -> Assigned User */
+    if(!closer && email && (byEmail[email] || []).length){ ids = byEmail[email]; ghlName = contactName(ids); appt = callFor(ids, date); if(appt){ closer = appt.rep; tier = "email"; } }
+    /* 2. name: Whop billing name -> GHL contact (exact name) -> the appointment */
+    if(!closer && (byName[squash(p.name)] || []).length){ const nid = byName[squash(p.name)]; const a = callFor(nid, date); if(a){ ids = nid; ghlName = ghlName || contactName(nid); appt = a; closer = a.rep; tier = "name"; } }
+    if(ghlName) names.push(ghlName);
+    /* 3. the End of Call form: the setter always; the closer when the calendar had no answer */
+    const eoc = findEoc(names, p.amount, date);
+    if(eoc){ eoc.used = true;
+      if(!closer && isPerson(eoc.closer)){ closer = eoc.closer; tier = "form"; }
+      else if(closer && isPerson(eoc.closer) && eoc.closer !== closer && tier !== "confirmed") flags.push({ kind:"closer-mismatch", form:eoc.closer, src:eoc.src });
+      if(isPerson(eoc.setter)) setter = eoc.setter; }
+    else if(isPerson(closer)) flags.push({ kind:"no-form" });
+    /* 4. nobody: build a suggestion from timing so the human just verifies */
+    let suggestion = null;
+    if(!closer){
+      const other = otherRepOn(ids, date);
+      const fn0 = squash(String(p.name).split(/\s+/)[0]);
+      const score = e => (fn0 && fn0.length >= 3 && squash(String(e.prospect).split(/\s+/)[0]) === fn0 ? 0 : 1) * 4 + (Math.abs(e.cash - p.amount) < 1 ? 0 : 2) + Math.min(Math.abs(daysBetween(e.date, date)), 1);
+      const cands = eocs.filter(e => !e.used && e.closed && isPerson(e.closer) && Math.abs(daysBetween(e.date, date)) <= WIN).sort((a,b) => score(a) - score(b));
+      suggestion = { forms: cands.filter(e => score(e) < 6).slice(0,3), other, ghlName };   /* first name or same amount, never a random neighbour */
+      flags.push({ kind:"unmatched" }); }
+    const prospect = nice(ghlName || (eoc && eoc.prospect) || p.name || email);
+    const total = contracted(m), memPaid = (paidByMem[p.membership] || []).filter(x => x.date >= date);
+    const planish = p.reason === "subscription_create" || (pl && pl.type === "renewal");
+    const payType = planish ? (total ? "Plan" : "Plan (open)") : "Upfront";
+    const key = "W|" + pid;
+    const d = { i:S.dealRows.length, key, pid, date, week:thuWeek(date), prospect, ghlName, whopName:p.name, email, closer, setter, tier, appt, eoc, flags, suggestion, contactId: ids[0] || "",
+      cash:p.amount, refunded:p.refunded || 0, payType, contract: total || p.amount, collected:p.amount, remaining: total ? Math.max(total - p.amount, 0) : null, installments:0, lastPayment:date, membership:p.membership, plan: pl ? pl.name : "",
+      closerComm:0, setterComm:0, lines:[], source:"whop", formRate: eoc ? eoc.rate : "" };
+    if(isPerson(closer)){ d.closerComm = r2(p.amount * rateFor(closer, d.formRate));
+      const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date, prospect, cash:p.amount, kind:"close" }; lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
+      if(isPerson(setter)){ d.setterComm = date >= FLAT_FROM ? setterFlat(setter) : r2(p.amount * (C.setterRateBefore || 0.05));
+        const SL = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date, prospect, cash:p.amount, kind: date >= FLAT_FROM ? "set-close" : "set-pct" }; lines.push(SL); d.lines.push(SL); P(setter).roles.Setter = 1; } }
+    S.dealRows.push(d);
   });
 
-  S.orphanCycles = Object.values(cycles).flat().filter(c => !c.used && c.amount > 0);
-
-  /* Setter shows without a close: held calls on _calls, flat model only */
-  const closedKeys = new Set(S.dealRows.map(d => normName(d.prospect) + "|" + d.date));
-  S.showRows = [];
-  S.calls.forEach(r => {
-    const week = String(r["Week (Thu)"]||""), date = String(r["Call Date"]||""), setter = normName(r["Setter"]), prospect = String(r["Prospect"]||"").trim();
-    if(week < FLAT_FROM || amt(r["Held"]) !== 1 || amt(r["Closed"]) === 1 || !isPerson(setter)) return;
-    if(closedKeys.has(normName(prospect) + "|" + date)) return;
-    const ro = rosterFor(setter); const a = ro && ro.show ? ro.show : D.show;
-    const key = "S|" + date + "|" + normName(prospect) + "|" + setter;
-    const L = { id:key, person:setter, role:"Setter", amount:a, dealKey:key, date, week, prospect, offer:String(r["Offer"]||""), cash:0, kind:"show" };
-    lines.push(L); S.showRows.push({ key, date, week, prospect, setter, closer: normName(r["Closer"]), amount:a }); P(setter).roles.Setter = 1;
+  /* ---- Installments: a later payment on the SAME Whop membership pays that deal's closer as it lands ---- */
+  const dealByMem = {}; S.dealRows.forEach(d => { if(d.membership) dealByMem[d.membership] = d; });
+  S.orphanCycles = [];
+  paid.filter(isCycle).sort((a,b) => a.date < b.date ? -1 : 1).forEach(p => {
+    if(p.date < DEALS_FROM) return;
+    let d = dealByMem[p.membership] || null, closer = d ? d.closer : "", tier = d ? d.tier : "";
+    if(!isPerson(closer)){ const mm = manual[p.id]; if(mm && isPerson(mm.closer)){ closer = mm.closer; tier = "confirmed"; } }
+    if(d){ d.installments++; d.collected += p.amount; if(d.remaining !== null) d.remaining = Math.max(d.contract - d.collected, 0); if(p.date > d.lastPayment) d.lastPayment = p.date; }
+    if(!isPerson(closer)){ S.orphanCycles.push({ pid:p.id, date:p.date, amount:p.amount, name:p.name, email:p.email, legacy: !d }); return; }
+    if(!d){ /* plan that started before Deals from: its own row so the money is visible */
+      const m = mems[p.membership], pl = m ? plans[m.plan] : null;
+      d = { i:S.dealRows.length, key:"W|" + p.id, pid:p.id, date:p.date, week:thuWeek(p.date), prospect:nice(p.name || p.email), ghlName:"", whopName:p.name, email:p.email, closer, setter:"", tier, appt:null, eoc:null, flags:[], suggestion:null, contactId:"",
+        cash:p.amount, refunded:p.refunded || 0, payType:"Plan", contract: contracted(m) || p.amount, collected:p.amount, remaining:null, installments:0, lastPayment:p.date, membership:p.membership, plan: pl ? pl.name : "", closerComm:0, setterComm:0, lines:[], source:"whop", instOnly:true };
+      S.dealRows.push(d); dealByMem[p.membership] = d; }
+    const a = r2(p.amount * rateFor(closer, d.formRate));
+    const L = { id:"I|" + p.id + "|C", person:closer, role:"Closer", amount:a, dealKey:d.key, date:p.date, prospect:d.prospect, cash:p.amount, kind:"installment", pid:p.id }; lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
+    if(d.instOnly) d.closerComm += a;
   });
 
-  /* Weeks: every Thursday from the earliest deal to the current week */
-  const allDates = S.dealRows.map(d => d.week).concat(S.calls.map(r => String(r["Week (Thu)"]||""))).filter(w => /^\d{4}-\d\d-\d\d$/.test(w));
-  const first = allDates.length ? allDates.reduce((a,b) => a < b ? a : b) : thuWeek(todayISO());
-  const cur = thuWeek(todayISO());
-  S.weeks = []; for(let w = thuWeek(first); w <= cur; w = dayShift(w, 7)) S.weeks.push(w);
-  S.weeks.reverse();
-  if(!S.fromD){ const r = presetRange("payout"); S.fromD = r[0]; S.toD = r[1]; }
+  /* ---- Forms that closed with no Whop money behind them ---- */
+  S.formOnly = eocs.filter(e => !e.used && e.closed && e.cash > 0 && e.date >= DEALS_FROM && !(e.src === "legacy" && PAID_THROUGH0 && e.date <= PAID_THROUGH0)).map(e => {
+    const attempts = failed.filter(f => Math.abs(daysBetween(f.date, e.date)) <= WIN && nameLike(f.name, e.prospect));
+    return Object.assign({ attempts, pending: daysBetween(e.date, today) <= 4 }, e); });
 
-  /* Weekly retainers from the Roster (Kaia's DM line), accrued per week from the config date */
-  S.roster.forEach(r => { const name = normName(r["Name"]); const weekly = amt(r["Weekly $"]); if(!name || !weekly) return;
-    const active = r["Active"] === null ? true : truthy(r["Active"]); if(!active) return;
-    S.weeks.filter(w => w >= KAIA_FROM).forEach(w => {
-      const L = { id:"W|" + w + "|" + name, person:name, role:"DM Setter", amount:weekly, dealKey:null, date:w, week:w, prospect:"Weekly DM-setting line", offer:"", cash:0, kind:"weekly" };
-      lines.push(L); P(name).roles["DM Setter"] = 1; }); });
-
-  /* Maya's tracker: match each of her rows to a deal or an installment line */
-  const dealFor = row => S.dealRows.find(d => {
-    const w = d.whop || {};
-    const nm = nameLike(row.name, d.prospect) || nameLike(row.name, w["Whop Billing Name"]) || nameLike(row.name, w["Whop Enrollment Name"]);
-    if(!nm) return false;
-    return Math.abs(d.cash - row.cash) < 1 || !row.cash; });
-  const instFor = row => lines.find(L => L.kind === "installment" && Math.abs(L.cash - row.cash) < 1 && nameLike(row.name, L.prospect) && Math.abs(daysBetween(L.date, row.date)) <= 10);
-  S.maya.rows.forEach(row => { const I = instFor(row); if(I && !I.maya){ row.matched = { kind:"installment", line:I }; I.maya = row; return; }
-    const d = dealFor(row); if(d && !d.maya){ row.matched = { kind:"deal", deal:d }; d.maya = row; } });
-  /* Maya's tracker names a closer for money the Cash Log never saw (link closes, legacy installments): her row is the source */
-  S.maya.rows.filter(r => !r.matched && r.cash > 0 && isPerson(r.closer) && r.closer !== "UNSURE").forEach(r => {
-    const closer = r.closer, setter = (isPerson(r.setter) && r.setter !== "UNSURE") ? r.setter : "";
-    const key = "M|" + r.date + "|" + normName(r.name) + "|" + closer, week = thuWeek(r.date), flat = week >= FLAT_FROM;
-    /* verify against Whop: an orphan installment or a Whop-only recon row with the same amount and a similar name */
-    let status = "NOT ON WHOP", w = null;
-    const oc = (S.orphanCycles || []).find(c => !c.used && Math.abs(c.amount - r.cash) < 1 && (nameLike(r.name, c.name) || (r.email && r.email === c.email)) && Math.abs(daysBetween(c.date, r.date)) <= 10);
-    if(oc){ oc.used = true; status = "MATCHED"; }
-    else { w = S.whop.find(x => !x.used && /^WHOP ONLY/.test(String(x["Recon Status"])) && Math.abs(amt(x["Whop Amount"]) - r.cash) < 1 && (nameLike(r.name, x["Whop Billing Name"]) || nameLike(r.name, x["Whop Enrollment Name"]) || nameLike(r.name, String(x["Whop Email"]||"").split("@")[0]) || (r.email && r.email === String(x["Whop Email"]||"").toLowerCase())));
-      if(w){ w.used = true; status = "MATCHED"; } }
-    const isInst = r.isInstallment || /installment/i.test(r.plan);
-    const d = { i:-1, key, date:r.date, week, prospect:r.name, closer, setter, offer: isInst ? "Installment" : (/lite|497|starter/i.test(r.offer) || r.cash === 497 ? "$497 Starter" : "$3K Strategy"), payType: isInst ? "Plan" : (/plan/i.test(r.plan) ? "Plan" : "PIF"),
-      cash:r.cash, revenue:r.cash, collected:r.cash, remaining:0, lastPayment: w ? String(w["Whop Paid Date"]||"") : (oc ? oc.date : ""), installments:0, email:r.email, flat, whop:w, whopStatus:status, refunded: w ? amt(w["Whop Refunded"]) : 0,
-      closerComm:0, setterComm:0, dmSetter: closer === "KAIA" ? "KAIA" : "", lines:[], maya:r, source:"maya" };
-    r.matched = { kind:"deal", deal:d };
-    const ro = rosterFor(closer); const rate = ro && ro.closerRate ? ro.closerRate : D.closerRate;
-    d.closerComm = Math.round(r.cash * rate * 100) / 100;
-    const L = { id:key+"|C", person:closer, role:"Closer", amount:d.closerComm, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind: isInst ? "installment" : "close" };
-    lines.push(L); d.lines.push(L); P(closer).roles.Closer = 1;
-    if(setter && !isInst){ d.setterComm = flat ? (rosterFor(setter) && rosterFor(setter).close || D.close) : Math.round(r.cash * SETTER_BEFORE * 100) / 100;
-      const SL = { id:key+"|S", person:setter, role:"Setter", amount:d.setterComm, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind: flat ? "set-close" : "set-pct" }; lines.push(SL); d.lines.push(SL); P(setter).roles.Setter = 1; }
-    if(TEAM_RATE > 0){ const t = Math.round(r.cash * TEAM_RATE * 100) / 100;
-      if(TEAM_TO){ const TL = { id:key+"|T", person:TEAM_TO, role:"Team", amount:t, dealKey:key, date:r.date, week, prospect:r.name, offer:d.offer, cash:r.cash, kind:"team" }; lines.push(TL); d.lines.push(TL); }
-      else S.teamUnassigned.push({ date:r.date, amount:t, prospect:r.name }); }
-    S.dealRows.push(d); });
-
-  /* Everything on or before HQ Config → "Paid through" was paid out already (Patrick, 8/28) */
-  const PAID_THROUGH = cfgDate("Paid through", ""); S.paidThrough = PAID_THROUGH;
-  if(/^\d{4}-\d\d-\d\d$/.test(PAID_THROUGH)) lines.filter(L => !L.paid && L.date <= PAID_THROUGH).forEach(L => { L.paid = true; L.payout = { "Payout ID":"Historical", "Date Paid": PAID_THROUGH, "Paid By":"Maya", source:"through" }; });
-
-  /* A block Maya marked "Wire Transfer Sent" pays every line dated inside it */
-  S.maya.blocks.filter(b => b.wireSent && b.from && b.to).forEach(b => {
-    lines.filter(L => !L.paid && L.date >= b.from && L.date <= b.to).forEach(L => { L.paid = true; L.payout = { "Payout ID":"Maya wire", "Date Paid": b.wireDate || b.to, "Paid By":"Maya", source:"maya" }; }); });
-
-  /* Payouts → which lines are paid. Lines listed in "Deals Covered" are paid outright;
-     payouts with no line list are applied FIFO to that person's oldest unpaid lines. */
-  const byId = {}; lines.forEach(L => { byId[L.id] = L; if(!L.paid){ L.paid = false; L.payout = null; } });
-  const live = S.payouts.filter(p => !truthy(p["Voided"]));
-  live.forEach(p => { String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean).forEach(id => { if(byId[id] && !byId[id].paid){ byId[id].paid = true; byId[id].payout = p; } }); });
-  live.filter(p => !has(p["Deals Covered"])).forEach(p => {
-    let left = amt(p["Amount Paid"]); const who = normName(p["Person"]);
-    lines.filter(L => L.person === who && !L.paid).sort((a,b) => a.date < b.date ? -1 : 1).forEach(L => { if(left >= L.amount - 0.005 && L.amount > 0){ left -= L.amount; L.paid = true; L.payout = p; } });
-  });
+  /* ---- Paid state ---- */
+  const PAID_THROUGH = C.paidThrough || ""; S.paidThrough = PAID_THROUGH;
+  lines.forEach(L => { L.paid = false; L.payout = null; });
+  if(/^\d{4}-\d\d-\d\d$/.test(PAID_THROUGH)) lines.filter(L => L.date <= PAID_THROUGH).forEach(L => { L.paid = true; L.payout = { id:"Historical", datePaid:PAID_THROUGH, paidBy:"", source:"through" }; });
+  const byId = {}; lines.forEach(L => byId[L.id] = L);
+  const live = (S.ST.payouts || []).filter(p => !p.voided);
+  live.forEach(p => (p.lines || []).forEach(id => { if(byId[id] && !byId[id].paid){ byId[id].paid = true; byId[id].payout = p; } }));
+  live.filter(p => !(p.lines || []).length).forEach(p => { let left = +p.amount || 0; lines.filter(L => L.person === p.person && !L.paid).sort((a,b) => a.date < b.date ? -1 : 1).forEach(L => { if(left >= L.amount - 0.005 && L.amount > 0){ left -= L.amount; L.paid = true; L.payout = p; } }); });
 
   lines.forEach(L => P(L.person).lines.push(L));
   S.lines = lines; S.people = people;
   S.dealRows.forEach(d => { d.closerPaid = d.lines.some(L => L.role === "Closer" && L.paid); d.setterPaid = d.lines.some(L => L.role === "Setter" && L.paid); });
-
-  /* Review queue */
+  if(!S.fromD){ const r = presetRange("payout"); S.fromD = r[0]; S.toD = r[1]; }
   S.reviews = buildReviews();
 }
 
 function personSummary(p){
-  const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid), held = [];
-  const owed = unpaid.reduce((s,L) => s + L.amount, 0);
+  const unpaid = p.lines.filter(L => !L.paid), paid = p.lines.filter(L => L.paid);
   const periodLines = unpaid.filter(L => inRange(L.date)), outside = unpaid.filter(L => !inRange(L.date));
-  const owedPeriod = periodLines.reduce((s,L) => s + L.amount, 0), owedOutside = outside.reduce((s,L) => s + L.amount, 0);
-  const earnedAll = p.lines.reduce((s,L) => s + L.amount, 0);
-  return { owed, owedPeriod, owedOutside, periodLines, outside, unpaid, paid, held, earnedAll, paidAll: paid.reduce((s,L) => s + L.amount, 0), heldAmt: held.reduce((s,L) => s + L.amount, 0) };
+  const sum = a => a.reduce((s,L) => s + L.amount, 0);
+  return { owed:sum(unpaid), owedPeriod:sum(periodLines), owedOutside:sum(outside), periodLines, outside, unpaid, paid, earnedAll:sum(p.lines), paidAll:sum(paid) };
 }
 
-/* ---------------- review rules ---------------- */
+/* ---------------- review rules: every item says exactly what to do ---------------- */
 function buildReviews(){
-  const out = [], today = todayISO(), cutoff = dayShift(today, -CFG.REVIEW_WINDOW_DAYS);
-  const dismissed = new Set(S.dismissed.map(r => String(r["Notification ID"]||"")));
-  const add = (id, level, ttl, detail, opts) => out.push(Object.assign({ id, level, title:ttl, detail, dismissed: dismissed.has(id) }, opts || {}));
+  const out = [], today = todayISO(), cutoff = dayShift(today, -CFG.REVIEW_WINDOW_DAYS), F = S.F;
+  const dismissed = new Set((S.ST.dismissed || []).map(r => r.id));
+  const add = (id, level, ttl, steps, opts) => out.push(Object.assign({ id, level, title:ttl, steps, dismissed: dismissed.has(id) }, opts || {}));
+  const whopLink = pid => '<a href="https://whop.com/dashboard/' + esc(S.C.whopBizId || "") + '/payments/" target="_blank" rel="noopener">open Whop payments</a> (search the email; payment ' + esc(pid) + ')';
+  const who = d => '<b>' + esc(d.prospect) + '</b>' + (d.email ? ' <span class="mono">' + esc(d.email) + '</span>' : '');
 
-  /* feed health (locked = cannot be dismissed) */
-  if(S.errors.Deals) add("feed|deals-error", "U", "Deals feed unreadable", esc(S.errors.Deals), {locked:true});
-  else if(!S.deals.length) add("feed|deals-empty", "U", "Deals tab is empty", "Open the HQ sheet, click cell A1 on the Deals tab and press <b>Allow access</b> on the IMPORTRANGE prompt. Do the same on Calls, Whop and Whop Payments. Until then nothing below can be computed.", {locked:true});
-  if(!S.errors.Deals && S.deals.length && !S.whop.length) add("feed|whop-empty", "U", "Whop tab is empty", "Whop verification is off. Allow access on the Whop tab's IMPORTRANGE cell, and check the Whop Recon job on the Master Tracker ran.", {locked:true});
-  const hqErr = S.errors.Roster || S.errors.Payouts || S.errors.Config || S.errors.Dismissed || S.errors.Maya;
-  if(hqErr) add("feed|hq-unreadable", "U", "Sales Team HQ sheet tabs unreadable", esc(String(hqErr)) + ". Default rates are in use, nothing shows as paid, and dismissals will not stick. The sheet must stay shared as Anyone with the link → Viewer and the HQ tabs must keep their names.", {locked:true});
-  if(!CFG.WEBAPP) add("cfg|no-webapp", "U", "Write endpoint not configured", "Paid and Dismiss checkboxes will not save. Deploy the Apps Script web app and paste its /exec URL into <span class=\"mono\">CFG.WEBAPP</span> in index.html.", {locked:true});
-  const stamp = whopRefreshed();
-  if(stamp){ const ageH = (Date.now() - stamp.getTime()) / 36e5, lim = cfgNum("Stale feed after (hours)", CFG.DEFAULTS.staleHours);
-    if(ageH > lim) add("feed|whop-stale|" + stamp.toISOString().slice(0,10), "U", "Whop feed is " + Math.round(ageH) + " hours old", "Last refresh " + esc(stamp.toLocaleString()) + ". The daily <span class=\"mono\">runWhopRecon()</span> trigger on the Master Tracker may have died. New payments are not being verified.", {locked:true}); }
+  /* feed health (locked = cannot be dismissed, fixes itself when the feed is back) */
+  (F.errors || []).forEach((e, i) => add("feed|error|" + i, "U", "A data source did not answer: " + e.split(":")[0], ["The API kept the last good copy of that source, so the numbers below may be behind.", "Patrick: open the Apps Script (SCA Commission HQ API) → Executions to see the error. Usual causes: an expired key, or GHL's auth timing out (retry).", "Once it pulls again this item disappears by itself."], {locked:true}));
+  if(F.refreshedAt){ const ageH = (Date.now() - Date.parse(F.refreshedAt)) / 36e5;
+    if(ageH > (S.C.staleHours || 2)) add("feed|stale|" + F.refreshedAt.slice(0,13), "U", "Data is " + (ageH < 48 ? Math.round(ageH) + " hours" : Math.round(ageH/24) + " days") + " old", ["Click <b>Refresh</b> at the top of this page. If the time in the sidebar does not move, the 15-minute trigger in the Apps Script has stopped.", "Patrick: run <span class=\"mono\">installTriggers()</span> in the SCA Commission HQ API script."], {locked:true}); }
+  if(F.contactBacklog) add("feed|backlog", "I", "Still looking up customer names in GHL", ["The API looks up " + (F.contactFetches || "") + " GHL contacts per run and has more to do. Some deals may show the Whop name and \"nobody\" for a few refreshes.", "Nothing to do. Check back after the next refresh (15 min)."], {locked:true});
+  if(!(F.eoc || []).length) add("feed|no-eoc", "I", "No End of Call Report responses came through", ["The form (End of Call Report) returned zero responses, so no setters can be named on new deals.", "Patrick: confirm EOC_FORM_ID in the script's properties points at the live form and that the account running the script owns it."], {locked:true});
 
-  /* Whop payment with no EOC form = unattributed cash (link close) */
-  S.whop.filter(r => /^WHOP ONLY/.test(String(r["Recon Status"])) && !r.used && String(r["Whop Paid Date"]||"") >= cutoff && !/subscription_cycle/.test(String(r["Whop Billing Reason"]||"")) && amt(r["Whop Amount"]) >= 497)
-    .forEach(r => { const id = "whop-only|" + String(r["Whop Payment ID"]||r["Whop Email"]||r["Whop Billing Name"]);
-      add(id, "U", money(amt(r["Whop Amount"])) + " from " + String(r["Whop Billing Name"]||"") + ": nobody is assigned", "Paid " + esc(fmtDY(r["Whop Paid Date"])) + " (" + esc(r["Whop Email"]||"") + ") with no EOC form and no closer on Maya's tracker. Add the closer on the Commissions Tracker and it pays out; dismiss if it earns nobody anything.", {kind:"whop-only"}); });
+  /* per-deal */
+  const recent = S.dealRows.filter(d => d.date >= cutoff && !d.instOnly);
+  recent.forEach(d => d.flags.forEach(f => {
+    if(f.kind === "unmatched"){
+      const sg = d.suggestion || {}, f0 = sg.forms && sg.forms[0];
+      const historical = S.paidThrough && d.date <= S.paidThrough;
+      const steps = ["Whop received " + money(d.cash) + " on " + fmtDY(d.date) + " from " + who(d) + ". That email is not on a GHL contact who had a call with a closer, and no End of Call form matches the name."];
+      if(f0) steps.push("<b>Most likely:</b> " + esc(title(f0.closer)) + " filed an End of Call form for <b>" + esc(f0.prospect) + "</b> on " + fmtD(f0.date) + (Math.abs(f0.cash - d.cash) < 1 ? " for the same " + money(f0.cash) : " for " + money(f0.cash)) + (f0.setter ? ", set by " + esc(title(f0.setter)) : "") + ". Same person paying under a different name or email?");
+      if(sg.other) steps.push("Note: " + esc(title(sg.other.rep)) + " (not a closer) ran a call with this contact on " + fmtD(sg.other.date) + ".");
+      steps.push("Check: " + whopLink(d.pid) + " and compare the name and email with the form" + (f0 ? "" : ", or ask the closers who took this one") + ".");
+      if(!f0) steps.splice(1, 0, "No End of Call form within " + (S.C.matchWindowDays || 3) + " days shares her first name or this amount, so there is nothing to pre-fill.");
+      steps.push("Then click <b>" + (f0 ? "Confirm" : "Assign") + "</b>, pick the closer" + (f0 ? " (pre-filled)" : "") + " and the setter, and save. The commission lines appear the moment you do." + (historical ? " This one is dated before " + fmtD(S.paidThrough) + ", so it already counts as paid; naming the closer just fixes the record." : " Until then nobody is paid on it."));
+      add("unmatched|" + d.pid, historical ? "I" : (d.cash >= 497 ? "U" : "I"), money(d.cash) + " from " + d.prospect + ": nobody is assigned", steps, { kind:"unmatched", dealKey:d.key, pid:d.pid, suggestion:f0 || null, action: f0 ? "Confirm" : "Assign" });
+    }
+    if(f.kind === "closer-mismatch")
+      add("closer-mismatch|" + d.pid, "U", d.prospect + ": calendar says " + title(d.closer) + ", the End of Call form says " + title(f.form),
+        [money(d.cash) + " paid " + fmtDY(d.date) + ". The GHL appointment was run by <b>" + esc(title(d.closer)) + "</b>; the End of Call form" + (f.src === "legacy" ? " (old Cash Log)" : "") + " names <b>" + esc(title(f.form)) + "</b>. Right now <b>" + esc(title(d.closer)) + "</b> is being paid.",
+         "Ask the two closers, or open the Fathom recording from the form, and decide who actually closed her.",
+         "If the form is right: click <b>Reassign</b>, pick " + esc(title(f.form)) + ", save. If the calendar is right: tick this item to dismiss it."], { kind:"mismatch", dealKey:d.key, pid:d.pid, action:"Reassign", closer:d.closer, setter:d.setter });
+    if(f.kind === "no-form" && d.date >= (S.C.flatFrom || "2026-08-27"))
+      add("no-form|" + d.pid, "I", money(d.cash) + " from " + d.prospect + ": no End of Call form",
+        ["Closer <b>" + esc(title(d.closer)) + "</b> came from the GHL calendar and is being paid. No End of Call form matched, so <b>no setter</b> is paid on this deal.",
+         "Ask " + esc(title(d.closer)) + " to file the End of Call Report for " + esc(d.prospect) + " (call date " + fmtD(d.appt ? d.appt.date : d.date) + "). The next refresh picks it up and this item clears itself.",
+         "Or, if you already know who set it: click <b>Assign setter</b>, pick the setter, save."], { kind:"no-form", dealKey:d.key, pid:d.pid, action:"Assign setter", closer:d.closer, setter:d.setter });
+  }));
 
-  /* EOC deal with no Whop payment = commission would be paid on unverified cash */
-  S.dealRows.filter(d => /^EOC ONLY/.test(d.whopStatus) && d.date >= cutoff).forEach(d => {
-    add("eoc-only|" + d.key, "U", money(d.cash) + " logged for " + d.prospect + ", no Whop payment found",
-      esc(title(d.closer)) + " filed an EOC on " + esc(fmtDY(d.date)) + " (" + esc(d.offer) + ", " + esc(d.payType) + "). Whop shows no matching payment. Commission of " + money(d.closerComm + d.setterComm) + " is owed against cash that has not landed. Hold it or confirm the payment came in off-Whop.", {kind:"eoc-only", dealKey:d.key}); });
+  /* End of Call form says closed, Whop has no money */
+  (S.formOnly || []).filter(e => e.date >= cutoff).forEach(e => {
+    const att = e.attempts || [], a0 = att[0];
+    const steps = ["<b>" + esc(title(e.closer)) + "</b> filed an End of Call form on " + fmtDY(e.date) + ": <b>" + esc(e.prospect) + "</b> closed for " + money(e.cash) + (e.contract > e.cash ? " of " + money(e.contract) : "") + ". Whop has no successful payment that matches."];
+    if(a0) steps.push("Whop does show a <b>failed</b> attempt by " + esc(a0.name || a0.email) + " on " + fmtD(a0.date) + " (" + esc(a0.method || "card") + "): “" + esc(a0.failure) + "”. She may not have finished paying.");
+    if(e.pending) steps.push("It is only " + daysBetween(e.date, today) + " day(s) old. Bank transfers take 2 to 4 days to clear on Whop; the next refresh will match it automatically. Check again tomorrow before doing anything.");
+    else steps.push("It is " + daysBetween(e.date, today) + " days old, so this is not a clearing delay.");
+    steps.push("Search Whop for her name and her email. If the money is there under a different name, that payment shows above as \"nobody is assigned\": confirm it there. If she never paid, tick this item to dismiss it. Nothing is owed on this form by itself.");
+    add("form-only|" + e.id, e.pending ? "I" : "U", money(e.cash) + " logged for " + e.prospect + ", no Whop payment found", steps, { kind:"form-only" }); });
 
-  /* Refund on a deal */
-  S.dealRows.filter(d => d.refunded > 0).forEach(d => {
+  /* Refunds */
+  S.dealRows.filter(d => d.refunded > 0 && d.date >= cutoff).forEach(d => {
     const paidLines = d.lines.filter(L => L.paid);
-    if(paidLines.length) add("refund-paid|" + d.key + "|" + d.refunded, "U", money(d.refunded) + " refunded on " + d.prospect + ", commission already paid",
-      "Whop refunded " + money(d.refunded) + " of " + money(d.cash) + ". " + esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " already paid out on this deal. No clawback rule exists (Config: <i>Clawback on refund</i>), so nothing is deducted automatically. Decide and log an adjustment in Ledger 2 if needed.", {kind:"refund", dealKey:d.key});
-    else add("refund-unpaid|" + d.key + "|" + d.refunded, "I", money(d.refunded) + " refunded on " + d.prospect + " before payout",
-      "Whop refunded " + money(d.refunded) + " of " + money(d.cash) + " and the commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet. Confirm whether it should still be paid in full.", {kind:"refund", dealKey:d.key}); });
+    const paidHere = paidLines.some(L => L.payout && L.payout.source !== "through");   /* paid through THIS page; historical payouts are Info */
+    add("refund|" + d.key + "|" + d.refunded, paidHere ? "U" : "I", money(d.refunded) + " refunded on " + d.prospect + (paidLines.length ? ", commission already paid" : ""),
+      ["Whop refunded " + money(d.refunded) + " of " + money(d.cash) + ". " + (paidLines.length ? esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " was already paid on it." : "The commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet."),
+       "There is no clawback rule. Decide with Gigi whether to deduct it from the next payout, and note it in the payout note when you do.", "Then tick this item to dismiss it."], { kind:"refund", dealKey:d.key }); });
 
-  /* Reps not on the roster */
-  Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => {
-    add("roster|" + k, "I", title(k) + " is not on the Roster tab", "Deals name <b>" + esc(title(k)) + "</b> but the Roster has no row for them, so default rates apply (closer " + Math.round(CFG.DEFAULTS.closerRate*100) + "%, setter $" + CFG.DEFAULTS.show + "/$" + CFG.DEFAULTS.close + "). Add a row or fix the spelling on the EOC form.", {kind:"roster"}); });
+  /* Reps not in config.json */
+  Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => add("roster|" + k, "I", title(k) + " is not in the roster", ["Deals name <b>" + esc(title(k)) + "</b> but config.json has no row for them, so default rates apply (closer " + Math.round((S.C.closerRate || 0.1)*100) + "%, setter $" + (S.C.setterClose || 50) + ").", "Patrick: add a roster row in config.json and push. If this is a typo or the wrong person, reassign the deal instead."], {kind:"roster"}));
 
-  /* Payment plan looks late: balance left and no payment in 35 days */
-  S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > cfgNum("Late plan after (days)", CFG.DEFAULTS.lateDays)).forEach(d => {
-    add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", "Last payment " + esc(fmtDY(d.lastPayment)) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.revenue) + ", " + money(d.remaining) + " remaining. Closer " + esc(title(d.closer)) + " has been paid on the cash so far only.", {kind:"late", dealKey:d.key}); });
+  /* Late payment plans */
+  S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > (S.C.lateDays || 35)).forEach(d =>
+    add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", ["Last Whop payment " + fmtDY(d.lastPayment) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.contract) + ", " + money(d.remaining) + " remaining.", "Whop retries failed installments itself. If she cancelled, the balance is gone; nothing changes here because commission is only paid on cash that landed.", "Tick to dismiss once someone has followed up."], {kind:"late", dealKey:d.key}));
 
   const order = { U:0, I:1 };
   return out.sort((a,b) => (a.locked ? -1 : 0) - (b.locked ? -1 : 0) || order[a.level] - order[b.level]);
 }
-function whopRefreshed(){
-  /* The Whop Payments tab carries "Refreshed 2026-08-28 06:01 PT" in row 1 (a header-row cell). */
-  for(const r of S.whopPay.slice(0,1)){ for(const k of Object.keys(r)){ const m = /Refreshed (\d{4}-\d\d-\d\d) (\d\d:\d\d)/.exec(k + " " + String(r[k]||"")); if(m) return new Date(m[1] + "T" + m[2] + ":00-07:00"); } }
-  for(const k of Object.keys(S.whopPay[0]||{})){ const m = /Refreshed (\d{4}-\d\d-\d\d) (\d\d:\d\d)/.exec(k); if(m) return new Date(m[1] + "T" + m[2] + ":00-07:00"); }
-  return null;
-}
+/* ======================= /MODEL ======================= */
 
 /* ---------------- render ---------------- */
 function renderAll(){
-  const open = S.reviews.filter(r => !r.dismissed);
-  const urgent = open.filter(r => r.level === "U").length;
+  const open = S.reviews.filter(r => !r.dismissed), urgent = open.filter(r => r.level === "U").length;
   const c = document.getElementById("cnt-pay"); c.hidden = !open.length; c.textContent = open.length; c.classList.toggle("hot", urgent > 0);
   const c1 = document.getElementById("cnt-l1"); c1.hidden = !S.dealRows.length; c1.textContent = S.dealRows.length;
-  const c2 = document.getElementById("cnt-l2"); c2.hidden = !S.payouts.length; c2.textContent = S.payouts.filter(p => !truthy(p["Voided"])).length;
-  const errs = Object.keys(S.errors);
-  document.getElementById("sf-status").innerHTML = S.errors.Deals ? '<span class="dot bad"></span>Deals feed unreadable' : (errs.length ? '<span class="dot warn"></span>Deals live · HQ sheet not shared' : (S.deals.length ? '<span class="dot"></span>Sheet connected' : '<span class="dot warn"></span>Feeds empty'));
-  document.getElementById("sf-fetched").textContent = S.fetched ? "Fetched " + S.fetched.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "";
-  document.getElementById("sf-write").innerHTML = CFG.WEBAPP ? '<span class="dot"></span>Writes on' : '<span class="dot bad"></span>Writes off (no endpoint)';
-  document.getElementById("sf-sheet").href = SHEET_URL;
+  const livePO = (S.ST.payouts || []).filter(p => !p.voided); const c2 = document.getElementById("cnt-l2"); c2.hidden = !livePO.length; c2.textContent = livePO.length;
+  const errs = (S.F.errors || []).length;
+  document.getElementById("sf-status").innerHTML = errs ? '<span class="dot warn"></span>' + errs + ' source' + (errs === 1 ? "" : "s") + ' failing' : '<span class="dot"></span>Whop · GHL · EOC form live';
+  document.getElementById("sf-fetched").textContent = S.F.refreshedAt ? "Data pulled " + new Date(S.F.refreshedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "";
+  document.getElementById("sf-write").innerHTML = '<span class="dot"></span>Signed in as admin';
   showPage(S.page);
 }
 function showPage(p){
@@ -644,23 +573,10 @@ function tableInner(heads, rows, o){
   return '<table><thead><tr>' + heads.map((h,i) => '<th class="' + (left.has(i) ? "l" : "") + '">' + h + '</th>').join("") + '</tr></thead><tbody>' +
     (rows.length ? rows.map(r => '<tr>' + r.map((c,i) => '<td class="' + (left.has(i) ? "l" : "") + (c === null ? " mute" : "") + '">' + (c === null ? "—" : c) + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="' + heads.length + '" class="l mute" style="text-align:center;padding:18px">' + esc((o && o.empty) || "Nothing here") + '</td></tr>') + '</tbody></table>';
 }
-const whopPill = d => {
-  if(!S.whop.length) return '<span class="pill">no recon</span>';
-  const st = d.whopStatus;
-  if(/^MATCHED/.test(st)) return '<span class="pill ok">Whop ✓</span>';
-  if(/^PROBABLE/.test(st)) return '<span class="pill chk">probable</span>';
-  if(/^EOC ONLY/.test(st)) return '<span class="pill bad">no payment</span>';
-  if(/^NOT ON WHOP/.test(st)) return '<span class="pill bad">not on Whop</span>';
-  if(/^PENDING/.test(st)) return '<span class="pill chk">pending recon</span>';
-  return '<span class="pill">' + esc(st.slice(0,16) || "?") + '</span>';
-};
-const mayaPill = () => "";
-const statusPill = d => { if(!d) return null; if(d.refunded > 0) return '<span class="pill bad">refunded ' + money(d.refunded) + '</span>';
-  const st = d.whopStatus; if(!S.whop.length) return null;
-  if(/^MATCHED|^PROBABLE/.test(st)) return '<span class="pill ok">Verified</span>';
-  if(/^PENDING/.test(st)) return '<span class="pill chk">Pending</span>';
-  return '<span class="pill bad">No payment found</span>'; };
+const payPill = d => d.refunded > 0 ? '<span class="pill bad">refunded ' + money(d.refunded) + '</span>' : '<span class="pill ok">Verified</span>';
+const matchPill = d => ({ email:'<span class="pill ok">email</span>', name:'<span class="pill ok">name</span>', form:'<span class="pill">EOC form</span>', confirmed:'<span class="pill">confirmed</span>' })[d.tier] || (isPerson(d.closer) ? '<span class="pill">' + esc(d.tier) + '</span>' : '<span class="pill bad">nobody</span>');
 const paidPill = (paid, amount) => amount > 0 ? (paid ? '<span class="pill ok">paid</span>' : '<span class="pill bad">owed</span>') : null;
+const custCell = d => esc(d.prospect) + (d.email ? '<div class="mono" style="font-size:11px;color:var(--ink-3)">' + esc(d.email) + '</div>' : '');
 
 /* ----- Pay Period ----- */
 function presetRange(v){
@@ -668,11 +584,11 @@ function presetRange(v){
   const monthEnd = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1], 0)).toISOString().slice(0,10); };
   const prevYm = ym => { const p = ym.split("-"); return new Date(Date.UTC(+p[0], +p[1]-2, 1)).toISOString().slice(0,7); };
   switch(v){
-    /* Payout week: Sat–Thu, paid the following Friday via Gusto (Taylor, 8/28). The Thursday on or before today closes the period. */
-    case "payout": { const thu = dayShift(cur, cur > t ? -7 : 0); return [dayShift(thu, -5), thu]; }
-    case "payout-prev": { const thu = dayShift(cur, cur > t ? -7 : 0); return [dayShift(thu, -12), dayShift(thu, -7)]; }
-    case "this-week": return [cur, dayShift(cur, 6)];
-    case "last-week": return [dayShift(cur, -7), dayShift(cur, -1)];
+    /* Payout week: Fri–Thu (7 days, so a Friday payment always belongs to a period), paid the following Friday.
+       "payout" = the week containing today (closes this coming Thursday); "payout-prev" = the last closed one. */
+    case "payout": { const end = cur === t ? cur : dayShift(cur, 7); return [dayShift(end, -6), end]; }
+    case "payout-prev": { const end = cur === t ? cur : dayShift(cur, 7); return [dayShift(end, -13), dayShift(end, -7)]; }
+    case "since-paid": return [dayShift(S.paidThrough || t, 1), t];
     case "this-month": return [ym + "-01", monthEnd(ym)];
     case "last-month": { const q = prevYm(ym); return [q + "-01", monthEnd(q)]; }
     case "30": return [dayShift(t, -29), t];
@@ -680,79 +596,62 @@ function presetRange(v){
     default: return null;
   }
 }
-function presetFor(a, b){
-  for(const v of ["payout","payout-prev","this-week","last-week","this-month","last-month","30","all"]){ const r = presetRange(v); if(r && r[0] === a && r[1] === b) return v; }
-  return "custom";
-}
+function presetFor(a, b){ for(const v of ["payout","payout-prev","since-paid","this-month","last-month","30","all"]){ const r = presetRange(v); if(r && r[0] === a && r[1] === b) return v; } return "custom"; }
 function renderPay(){
   document.getElementById("pg-title").textContent = "Pay Period";
   const preset = presetFor(S.fromD, S.toD);
-  document.getElementById("pg-sub").textContent = fmtDY(S.fromD) + " – " + fmtDY(S.toD) + (preset === "payout" ? " · this Friday's payout" : preset === "this-week" ? " · current webinar week" : "");
+  document.getElementById("pg-sub").textContent = fmtDY(S.fromD) + " – " + fmtDY(S.toD) + (preset === "payout" ? " · paid next Friday" : preset === "payout-prev" ? " · paid this Friday" : "");
   document.getElementById("pg-ctl").innerHTML = '<select id="preset" aria-label="Preset range">' +
-    [["payout","Payout week (Sat–Thu)"],["payout-prev","Previous payout week"],["this-week","Webinar week (Thu–Wed)"],["last-week","Last webinar week"],["this-month","This month"],["last-month","Last month"],["30","Last 30 days"],["all","All time"],["custom","Custom"]]
+    [["payout","This payout week (Fri–Thu)"],["payout-prev","Last payout week"],["since-paid","Everything unpaid since " + fmtD(S.paidThrough)],["this-month","This month"],["last-month","Last month"],["30","Last 30 days"],["all","All time"],["custom","Custom"]]
       .map(([v,l]) => '<option value="' + v + '"' + (v === preset ? ' selected' : '') + '>' + l + '</option>').join("") + '</select>' +
     '<input type="date" id="from" value="' + S.fromD + '" aria-label="From"><span class="role">to</span><input type="date" id="to" value="' + S.toD + '" aria-label="To">' +
-    '<button class="btn" id="refresh">Refresh</button>';
+    '<button class="btn" id="refresh" title="Pull Whop, GHL and the form again right now">Refresh</button>';
   document.getElementById("preset").onchange = e => { const r = presetRange(e.target.value); if(r){ S.fromD = r[0]; S.toD = r[1]; renderPay(); } };
   const setRange = () => { const a = document.getElementById("from").value, b = document.getElementById("to").value;
     if(/^\d{4}-\d\d-\d\d$/.test(a) && /^\d{4}-\d\d-\d\d$/.test(b)){ S.fromD = a <= b ? a : b; S.toD = a <= b ? b : a; renderPay(); } };
   document.getElementById("from").onchange = setRange; document.getElementById("to").onchange = setRange;
-  document.getElementById("refresh").onclick = () => { toast("Refreshing…"); load().then(() => toast("Up to date")); };
+  document.getElementById("refresh").onclick = () => { toast("Pulling fresh data…"); load({refresh:true}).then(() => toast("Up to date")).catch(e => toast(e.message)); };
 
-  const dealsW = S.dealRows.filter(d => inRange(d.date)), showsW = S.showRows.filter(s => inRange(s.date));
-  const linesW = S.lines.filter(L => inRange(L.date));
+  const dealsW = S.dealRows.filter(d => inRange(d.date) && !d.instOnly), linesW = S.lines.filter(L => inRange(L.date));
   const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owedPeriod > 0.004).sort((a,b) => b.s.owedPeriod - a.s.owedPeriod);
   const totalOwed = names.reduce((s,x) => s + x.s.owedPeriod, 0);
   const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
-  const cashW = dealsW.reduce((s,d) => s + d.cash, 0), earnedW = linesW.reduce((s,L) => s + L.amount, 0);
 
   let h = "";
-  /* review queue */
   const qi = r => '<div class="qi' + (r.locked ? ' locked' : '') + '" data-id="' + esc(r.id) + '">' +
     '<input type="checkbox" aria-label="Dismiss" ' + (r.locked ? 'disabled' : '') + '>' +
-    '<div class="b"><div class="t"><span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>' + esc(r.title) + '</div><div class="d">' + r.detail + '</div></div></div>';
-  h += panel("Needs review", open.length ? '<div class="q" id="queue">' + open.map(qi).join("") + '</div>' : '<div class="empty">Nothing needs a human right now.</div>',
+    '<div class="b"><div class="t"><span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>' + esc(r.title) + '</div><div class="d"><ol class="steps">' + r.steps.map(s => '<li>' + s + '</li>').join("") + '</ol>' + (r.action ? '<button class="btn sm assign-btn" data-id="' + esc(r.id) + '">' + esc(r.action) + '</button>' : '') + '</div></div></div>';
+  h += panel("Needs review", open.length ? '<div class="q" id="queue">' + open.map(qi).join("") + '</div>' : '<div class="empty">Nothing needs a human right now. Every Whop payment since ' + esc(fmtD(S.C.dealsFrom)) + ' has a closer.</div>',
     (dismissed.length ? '<button class="btn sm" id="show-dismissed" style="background:transparent;color:inherit;border-color:rgba(255,255,255,.35)">' + dismissed.length + ' dismissed</button>' : 'tick to dismiss'));
 
-  /* to be paid */
   const payRows = names.map(x => { const p = S.people[x.k], s = x.s;
-    return ['<button class="name-btn" data-person="' + esc(x.k) + '">' + esc(title(x.k)) + '</button>',
-      '<span class="role">' + esc(Object.keys(p.roles).join(" + ")) + '</span>',
-      num(s.periodLines.length),
-      '<span class="owed">' + money(s.owedPeriod) + '</span>',
+    return ['<button class="name-btn" data-person="' + esc(x.k) + '">' + esc(title(x.k)) + '</button>', '<span class="role">' + esc(Object.keys(p.roles).join(" + ")) + '</span>', num(s.periodLines.length), '<span class="owed">' + money(s.owedPeriod) + '</span>',
       '<input type="checkbox" class="pay-chk" data-person="' + esc(x.k) + '" aria-label="Mark ' + esc(title(x.k)) + ' paid">']; });
   h += '<div class="panel pay"><div class="panel-head"><span>To be paid · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + '</span><span class="r">' + money(totalOwed) + ' · tick Paid when the money is sent · click a name for the deals</span></div><div class="tw">' +
     tableInner(["Rep","Role","Lines","Owed this period","Paid?"], payRows, {left:[0,1], empty:"Nothing owed for this period."}) + '</div>' +
     (() => { const ol = Object.keys(S.people).map(k => ({k, s:personSummary(S.people[k])})).filter(x => x.s.owedOutside > 0.004).sort((a,b) => b.s.owedOutside - a.s.owedOutside);
-      return ol.length ? '<div style="padding:9px 16px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--hair)">Unpaid from other periods, not included above: ' + ol.map(x => esc(title(x.k)) + ' ' + money(x.s.owedOutside)).join(' · ') + ' &nbsp;<button class="btn sm" id="show-all">Show all time</button></div>' : ''; })() + '</div>';
+      return ol.length ? '<div style="padding:9px 16px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--hair)">Unpaid outside this range: ' + ol.map(x => esc(title(x.k)) + ' ' + money(x.s.owedOutside)).join(' · ') + ' &nbsp;<button class="btn sm" id="show-all">Show everything unpaid</button></div>' : ''; })() + '</div>';
 
-  /* transactions this period */
   const instW = S.lines.filter(L => L.kind === "installment" && inRange(L.date));
   const txRows = dealsW.map(d => ({ date:d.date, d, inst:null })).concat(instW.map(L => ({ date:L.date, d:S.dealRows.find(x => x.key === L.dealKey), inst:L }))).sort((a,b) => a.date < b.date ? 1 : -1);
-  const tx = txRows.map(({d, inst}) => inst ? [
-    esc(fmtD(inst.date)), esc(d.prospect), '<span class="mute">Installment</span>', money(inst.cash), d.remaining > 0 ? money(d.remaining) : null, "Plan", statusPill(d),
-    esc(title(d.closer)), money(inst.amount) + " " + (paidPill(inst.paid, inst.amount) || ""), null, null, null] : [
-    esc(fmtD(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), d.remaining > 0 ? money(d.remaining) : null, esc(d.payType || "") || null, statusPill(d),
-    isPerson(d.closer) ? esc(title(d.closer)) : null, d.closerComm ? money(d.closerComm) + " " + (paidPill(d.closerPaid, d.closerComm) || "") : null,
-    isPerson(d.setter) ? esc(title(d.setter)) : null, d.setterComm ? money(d.setterComm) + " " + (paidPill(d.setterPaid, d.setterComm) || "") : null,
-    d.dmSetter ? esc(title(d.dmSetter)) : null]);
-  const cashInst = instW.reduce((s,L) => s + L.cash, 0);
-  h += panel("Transactions this period", '<div class="tw">' + tableInner(["Date","Customer","Offer","Collected","Remaining","Pay type","Payment","Closer","Closer comm","Setter","Setter comm","DM setter"], tx, {left:[1,2,5,7,9,11], empty:"No deals or installments in this period."}) + '</div>', num(dealsW.length) + " deals" + (instW.length ? " + " + instW.length + " installment" + (instW.length === 1 ? "" : "s") : "") + " · " + money(cashW + cashInst));
-  if(showsW.length) h += panel("Setter shows without a close · $" + (showsW[0].amount) + " each", '<div class="tw">' + tableInner(["Date","Customer","Setter","Closer on the call","Earned"], showsW.map(s => [esc(fmtD(s.date)), esc(s.prospect), esc(title(s.setter)), isPerson(s.closer) ? esc(title(s.closer)) : null, money(s.amount)]), {left:[1,2,3]}) + '</div>');
+  const tx = txRows.map(({d, inst}) => inst ? [esc(fmtD(inst.date)), custCell(d) + '<span class="mute" style="font-size:11px">installment</span>', money(inst.cash), d.remaining !== null && d.remaining > 0 ? money(d.remaining) : null, "Plan", payPill(d), matchPill(d), esc(title(d.closer)), money(inst.amount) + " " + (paidPill(inst.paid, inst.amount) || ""), null, null]
+    : [esc(fmtD(d.date)), custCell(d), money(d.cash), d.remaining !== null && d.remaining > 0 ? money(d.remaining) : null, esc(d.payType), payPill(d), matchPill(d), isPerson(d.closer) ? esc(title(d.closer)) : null, d.closerComm ? money(d.closerComm) + " " + (paidPill(d.closerPaid, d.closerComm) || "") : null, isPerson(d.setter) ? esc(title(d.setter)) : null, d.setterComm ? money(d.setterComm) + " " + (paidPill(d.setterPaid, d.setterComm) || "") : null]);
+  const cashW = dealsW.reduce((s,d) => s + d.cash, 0) + instW.reduce((s,L) => s + L.cash, 0);
+  h += panel("Whop payments this period", '<div class="tw">' + tableInner(["Date","Customer","Collected","Remaining","Pay type","Payment","Match","Closer","Closer comm","Setter","Setter comm"], tx, {left:[1,4,7,9], empty:"No Whop payments in this period."}) + '</div>', num(dealsW.length) + " deals" + (instW.length ? " + " + instW.length + " installment" + (instW.length === 1 ? "" : "s") : "") + " · " + money(cashW));
 
-  h += '<div class="note"><p><strong>How this works.</strong> Deals arrive from the closers\u2019 EOC forms through the Master Tracker. Closers earn 10% of upfront cash. Setters earn $30 per held call and $50 when a call they set closes (the $50 replaces the $30). Kaia earns 10% on the $497 closes she makes plus a weekly DM-setting line. <strong>Owed this period</strong> is the commission on deals, installments and calls dated inside the selected range that is not marked paid on Ledger 2 or covered by a wired block on Maya\'s Commissions Tracker. Closers earn their rate on each installment as it lands on Whop, the way Maya has been paying it. Deals that only exist on Maya\'s Commissions Tracker (link closes, older plans) are paid to the closer she wrote down. Anything unpaid outside the range shows up in the review queue so it cannot get lost. <strong>DM setter</strong> is filled when Kaia closed the deal, because the EOC form has no DM-setter field yet.</p>' +
-    (S.teamUnassigned && S.teamUnassigned.length ? '<p style="color:var(--ink-3)">The 3.5% team line on Maya\'s tracker has no recipient set (HQ Config → Team commission to), so it is not owed to anyone here.</p>' : '') +
-    '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for this period\'s amount and marks those lines paid. Ticking a review item hides it for everyone. Both write to the HQ sheet.</p></div>';
+  h += '<div class="note"><p><strong>How this works.</strong> Every line is a successful Whop payment; nothing else creates one. The customer’s name comes from GHL. The closer is whoever ran her appointment on the GHL calendar, found by her Whop email first, then by her name; if neither finds a call, the closer’s End of Call form names her; if nothing matches, the payment sits in <em>Needs review</em> with the most likely match pre-filled and nobody is paid until someone confirms. The End of Call form is the only source of the setter. Closers earn 10% of each payment as it lands (15% when the form says self-booked); setters earn $50 when a call they set closes. <strong>Owed this period</strong> is every commission line dated inside the selected range that has not been marked paid on Ledger 2. Everything dated on or before ' + esc(fmtDY(S.paidThrough)) + ' counts as paid.</p>' +
+    (S.orphanCycles.length ? (() => { const oc = S.orphanCycles, tot = oc.reduce((s,c) => s + c.amount, 0); return '<p style="color:var(--ink-3)">' + oc.length + ' installment' + (oc.length === 1 ? '' : 's') + ' (' + money(tot) + ') landed on plans that started before ' + esc(fmtD(S.C.dealsFrom)) + '. Nobody is owed on them until a closer is named: ' + oc.slice(0,6).map(c => esc(c.name || c.email) + ' ' + money(c.amount) + ' ' + esc(fmtD(c.date))).join(' · ') + (oc.length > 6 ? ' · +' + (oc.length - 6) + ' more' : '') + '</p>'; })() : '') +
+    '<p style="color:var(--ink-3)">Ticking <strong>Paid</strong> logs a payout to Ledger 2 for this period’s amount and marks those lines paid. Ticking a review item hides it for everyone. Data refreshes every 15 minutes; <strong>Refresh</strong> pulls it now.</p></div>';
   const pg = document.getElementById("page-pay"); pg.innerHTML = h;
-
   pg.querySelectorAll(".name-btn").forEach(b => b.onclick = () => openPerson(b.dataset.person));
   pg.querySelectorAll(".pay-chk").forEach(b => b.onchange = () => { if(b.checked) confirmPayout(b.dataset.person, () => { b.checked = false; }); });
   pg.querySelectorAll("#queue .qi input").forEach(b => b.onchange = () => { if(b.checked) dismissReview(b.closest(".qi").dataset.id, () => { b.checked = false; }); });
+  pg.querySelectorAll(".assign-btn").forEach(b => b.onclick = () => { const it = S.reviews.find(x => x.id === b.dataset.id); if(it) assignMatch(it); });
   const sd = document.getElementById("show-dismissed"); if(sd) sd.onclick = () => openDismissed();
-  const sa = document.getElementById("show-all"); if(sa) sa.onclick = () => { const r = presetRange("all"); S.fromD = r[0]; S.toD = r[1]; renderPay(); };
+  const sa = document.getElementById("show-all"); if(sa) sa.onclick = () => { const r = presetRange("since-paid"); S.fromD = r[0]; S.toD = r[1]; renderPay(); };
 }
 
-/* ----- Drawer: person ----- */
+/* ----- Drawer ----- */
 function openDrawer(ttl, sub, body, foot){
   document.getElementById("dr-title").textContent = ttl; document.getElementById("dr-sub").innerHTML = sub;
   document.getElementById("dr-body").innerHTML = body; document.getElementById("dr-foot").innerHTML = foot || "";
@@ -761,98 +660,90 @@ function openDrawer(ttl, sub, body, foot){
 function closeDrawer(){ document.getElementById("drawer").classList.remove("on"); document.getElementById("drawer").setAttribute("aria-hidden","true"); document.getElementById("scrim").classList.remove("on"); }
 function lineRow(L){
   const d = L.dealKey ? S.dealRows.find(x => x.key === L.dealKey) : null;
-  const kind = { close:"Closed", "set-close":"Set · closed", "set-pct":"Set (5%)", show:"Set · call held", weekly:"Weekly", installment:"Installment", team:"Team" }[L.kind] || L.kind;
-  return [esc(fmtD(L.date)), esc(L.prospect), esc(L.offer || "") || null, L.cash ? money(L.cash) : null, esc(kind), d ? statusPill(d) : null, money(L.amount)];
+  const kind = { close:"Closed", "set-close":"Set · closed", "set-pct":"Set (5%)", installment:"Installment" }[L.kind] || L.kind;
+  return [esc(fmtD(L.date)), esc(L.prospect), L.cash ? money(L.cash) : null, esc(kind), d ? payPill(d) : null, money(L.amount)];
 }
 function openPerson(k){
   const p = S.people[k]; if(!p) return; const s = personSummary(p);
   const byDate = (a,b) => a.date < b.date ? 1 : -1;
   const period = s.periodLines.slice().sort(byDate), outside = s.outside.slice().sort(byDate), paid = s.paid.slice().sort(byDate);
-  const heads = ["Date","Customer","Offer","Collected","Role on deal","Payment","Commission"];
-  let body = '<div class="sec">Owed this period · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + ' · ' + period.length + ' line' + (period.length === 1 ? "" : "s") + ' · ' + money(s.owedPeriod) + '</div><div class="tw">' + tableInner(heads, period.map(lineRow), {left:[1,2,4], empty:"Nothing owed in this period."}) + '</div>';
-  if(outside.length) body += '<div class="sec" style="margin-top:14px">Unpaid outside this period · ' + outside.length + ' line' + (outside.length === 1 ? "" : "s") + ' · ' + money(s.owedOutside) + '</div><div class="tw">' + tableInner(heads, outside.map(lineRow), {left:[1,2,4]}) + '</div>';
-  if(paid.length) body += '<div class="sec" style="margin-top:14px">Paid · ' + paid.length + ' line' + (paid.length === 1 ? "" : "s") + ' · ' + money(s.paidAll) + '</div><div class="tw">' + tableInner(heads.concat(["Payout"]), paid.map(L => lineRow(L).concat([esc(fmtD(L.payout ? L.payout["Date Paid"] : "")) + ' <span class="mute">' + esc(String(L.payout ? L.payout["Payout ID"] : "")) + '</span>'])), {left:[1,2,4]}) + '</div>';
-  if(p.roster && p.roster.notes) body += '<div class="sec" style="margin-top:14px">Roster note</div><div style="padding:0 20px 16px;font-size:12.5px;color:var(--ink-2)">' + esc(p.roster.notes) + '</div>';
-  openDrawer(title(k), esc(Object.keys(p.roles).join(" + ")) + (p.roster ? "" : ' · <span class="pill chk">not on roster</span>') + ' · earned ' + money(s.earnedAll) + ' all time',
+  const heads = ["Date","Customer","Collected","Role on deal","Payment","Commission"];
+  let body = '<div class="sec">Owed this period · ' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + ' · ' + period.length + ' line' + (period.length === 1 ? "" : "s") + ' · ' + money(s.owedPeriod) + '</div><div class="tw">' + tableInner(heads, period.map(lineRow), {left:[1,3], empty:"Nothing owed in this period."}) + '</div>';
+  if(outside.length) body += '<div class="sec" style="margin-top:14px">Unpaid outside this period · ' + outside.length + ' · ' + money(s.owedOutside) + '</div><div class="tw">' + tableInner(heads, outside.map(lineRow), {left:[1,3]}) + '</div>';
+  if(paid.length) body += '<div class="sec" style="margin-top:14px">Paid · ' + paid.length + ' line' + (paid.length === 1 ? "" : "s") + ' · ' + money(s.paidAll) + '</div><div class="tw">' + tableInner(heads.concat(["Payout"]), paid.map(L => lineRow(L).concat([esc(fmtD(L.payout ? L.payout.datePaid : "")) + ' <span class="mute">' + esc(L.payout ? L.payout.id : "") + '</span>'])), {left:[1,3]}) + '</div>';
+  openDrawer(title(k), esc(Object.keys(p.roles).join(" + ")) + (p.roster ? "" : ' · <span class="pill chk">not in roster</span>') + ' · earned ' + money(s.earnedAll) + ' since ' + esc(fmtD(S.C.dealsFrom)),
     body, s.owedPeriod > 0.004 ? '<span style="font-size:13px">Owed this period <b style="font-family:var(--mono)">' + money(s.owedPeriod) + '</b></span><button class="btn primary" id="dr-pay">Mark paid ' + money(s.owedPeriod) + '</button>' : '<span class="pill ok">Nothing owed this period</span>');
   const b = document.getElementById("dr-pay"); if(b) b.onclick = () => confirmPayout(k);
 }
 function openDismissed(){
-  const rows = S.reviews.filter(r => r.dismissed).map(r => { const d = S.dismissed.find(x => String(x["Notification ID"]) === r.id) || {};
-    return ['<span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>', esc(r.title), esc(fmtD(d["Dismissed At"])) + (has(d["Dismissed By"]) ? ' <span class="mute">' + esc(d["Dismissed By"]) + '</span>' : ''), '<button class="btn sm restore" data-id="' + esc(r.id) + '">Restore</button>']; });
+  const rows = S.reviews.filter(r => r.dismissed).map(r => { const d = (S.ST.dismissed || []).find(x => x.id === r.id) || {};
+    return ['<span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>', esc(r.title), esc(fmtD(String(d.at||"").slice(0,10))) + (d.by ? ' <span class="mute">' + esc(d.by) + '</span>' : '') + (d.note ? '<div class="mute" style="font-size:11px">' + esc(d.note) + '</div>' : ''), '<button class="btn sm restore" data-id="' + esc(r.id) + '">Restore</button>']; });
   openDrawer("Dismissed", rows.length + " item" + (rows.length === 1 ? "" : "s") + " hidden from the review queue", '<div class="tw">' + tableInner(["","Item","Dismissed",""], rows, {left:[0,1,2]}) + '</div>');
-  document.querySelectorAll(".restore").forEach(b => b.onclick = () => writeAction({action:"undismiss", id:b.dataset.id}, "Restored").then(() => { closeDrawer(); }));
+  document.querySelectorAll(".restore").forEach(b => b.onclick = () => writeAction({action:"undismiss", id:b.dataset.id, by: localStorage.getItem("hq.paidBy") || "admin"}, "Restored").then(() => closeDrawer()));
 }
 
-/* ----- Ledger 1: deals ----- */
-const L1 = { q:"", person:"", offer:"", sort:"date", dir:"desc" };
+/* ----- Ledger 1 ----- */
+const L1 = { q:"", person:"", sort:"date", dir:"desc" };
 function renderL1(){
   document.getElementById("pg-title").textContent = "Ledger 1 · Deals";
-  document.getElementById("pg-sub").textContent = "Every deal since " + (S.dealRows.length ? fmtDY(S.dealRows.map(d => d.date).sort()[0]) : "—") + ", joined to Whop";
+  document.getElementById("pg-sub").textContent = "Every successful Whop payment since " + fmtDY(S.C.dealsFrom) + " · name from GHL · closer from the GHL calendar · setter from the End of Call form";
   document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv1">Download CSV</button>';
-  const people = Object.keys(S.people).sort(), offers = [...new Set(S.dealRows.map(d => d.offer).filter(Boolean))].sort();
-  let rows = S.dealRows.filter(d => (!L1.person || d.closer === L1.person || d.setter === L1.person) && (!L1.offer || d.offer === L1.offer) && (!L1.q || (d.prospect + " " + d.closer + " " + d.setter + " " + d.whopStatus + " " + (d.whop ? d.whop["Whop Email"] : "")).toLowerCase().includes(L1.q.toLowerCase())));
-  const keyf = { date:d => d.date, prospect:d => d.prospect.toLowerCase(), cash:d => d.cash, closer:d => d.closer, setter:d => d.setter, offer:d => d.offer }[L1.sort] || (d => d.date);
+  const people = Object.keys(S.people).sort();
+  let rows = S.dealRows.filter(d => (!L1.person || d.closer === L1.person || d.setter === L1.person) && (!L1.q || (d.prospect + " " + d.whopName + " " + d.closer + " " + d.setter + " " + d.email + " " + d.pid).toLowerCase().includes(L1.q.toLowerCase())));
+  const keyf = { date:d => d.date, prospect:d => d.prospect.toLowerCase(), cash:d => d.cash, closer:d => d.closer, setter:d => d.setter }[L1.sort] || (d => d.date);
   rows.sort((a,b) => { const x = keyf(a), y = keyf(b); return (x < y ? -1 : x > y ? 1 : 0) * (L1.dir === "asc" ? 1 : -1); });
-  const total = rows.reduce((s,d) => s + d.cash, 0);
+  const total = rows.reduce((s,d) => s + d.collected, 0);
   const th = (label, key, left) => '<th class="sort ' + (left ? "l" : "") + '" data-key="' + key + '"' + (L1.sort === key ? ' data-dir="' + L1.dir + '"' : '') + '>' + label + '</th>';
-  let h = '<div class="panel"><div class="panel-head"><span>Deals</span><span class="r">' + num(rows.length) + ' of ' + num(S.dealRows.length) + ' · ' + money(total) + '</span></div>' +
-    '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email" value="' + esc(L1.q) + '">' +
-    '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select>' +
-    '<select id="f-offer"><option value="">All offers</option>' + offers.map(o => '<option value="' + esc(o) + '"' + (L1.offer === o ? ' selected' : '') + '>' + esc(o) + '</option>').join("") + '</select></div>' +
-    '<div class="tw"><table><thead><tr>' + th("Date","date") + th("Customer","prospect",1) + th("Offer","offer",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th>Last payment</th><th class="l">Pay type</th><th>Payment</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th><th class="l">DM setter</th></tr></thead><tbody>' +
-    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), esc(d.prospect), esc(d.offer), money(d.cash), /plan/i.test(d.payType) ? money(d.collected) + (d.installments ? ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : '') : "—", /plan/i.test(d.payType) && d.remaining > 0 ? money(d.remaining) : "—", /plan/i.test(d.payType) && d.lastPayment ? esc(fmtD(d.lastPayment)) : "—", esc(d.payType) || "—", statusPill(d) || "—",
+  let h = '<div class="panel"><div class="panel-head"><span>Deals</span><span class="r">' + num(rows.length) + ' of ' + num(S.dealRows.length) + ' · ' + money(total) + ' collected</span></div>' +
+    '<div class="filters"><input type="search" id="f-q" placeholder="Search customer, rep, email, payment id" value="' + esc(L1.q) + '">' +
+    '<select id="f-person"><option value="">All reps</option>' + people.map(p => '<option value="' + esc(p) + '"' + (L1.person === p ? ' selected' : '') + '>' + esc(title(p)) + '</option>').join("") + '</select></div>' +
+    '<div class="tw"><table><thead><tr>' + th("Date","date") + th("Customer","prospect",1) + th("Collected","cash") + '<th>Paid to date</th><th>Remaining</th><th class="l">Pay type</th><th>Payment</th><th>Match</th>' + th("Closer","closer",1) + '<th>Closer comm</th><th>Paid?</th>' + th("Setter","setter",1) + '<th>Setter comm</th><th>Paid?</th></tr></thead><tbody>' +
+    (rows.length ? rows.map(d => '<tr>' + [esc(fmtDY(d.date)), custCell(d) + (d.whopName && squash(d.whopName) !== squash(d.prospect) ? '<div class="mute" style="font-size:11px">Whop: ' + esc(d.whopName) + '</div>' : ''), money(d.cash),
+      /plan/i.test(d.payType) ? money(d.collected) + (d.installments ? ' <span class="mute">(' + (d.installments + 1) + ' pmts)</span>' : '') : "—", /plan/i.test(d.payType) && d.remaining !== null ? money(d.remaining) : "—", esc(d.payType), payPill(d), matchPill(d),
       isPerson(d.closer) ? esc(title(d.closer)) : "—", d.closerComm ? money(d.closerComm) : "—", paidPill(d.closerPaid, d.closerComm) || "—",
-      isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—", d.dmSetter ? esc(title(d.dmSetter)) : "—"]
-      .map((c,i) => '<td class="' + ([1,2,7,9,12,15].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="16" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
+      isPerson(d.setter) ? esc(title(d.setter)) : "—", d.setterComm ? money(d.setterComm) : "—", paidPill(d.setterPaid, d.setterComm) || "—"]
+      .map((c,i) => '<td class="' + ([1,5,8,11].includes(i) ? "l" : "") + (c === "—" ? " mute" : "") + '">' + c + '</td>').join("") + '</tr>').join("") : '<tr><td colspan="14" class="l mute" style="text-align:center;padding:18px">No deals match.</td></tr>') +
     '</tbody></table></div></div>';
-  h += '<div class="note"><p><strong>Payment</strong>: <span class="pill ok">Verified</span> the money is on Whop · <span class="pill chk">Pending</span> closed in the last two days, Whop check runs at 6 AM · <span class="pill bad">No payment found</span> a form was filed and no money landed, do not pay on it yet. <strong>Paid to date / Remaining / Last payment</strong> only apply to payment plans. Commission is earned on each payment as it lands.</p></div>';
+  h += '<div class="note"><p><strong>Payment</strong>: <span class="pill ok">Verified</span> Whop shows the charge as paid (only paid charges appear here) · <span class="pill bad">refunded</span> Whop refunded some or all of it. <strong>Match</strong> is how the closer was found: <span class="pill ok">email</span> the Whop email is on a GHL contact who had the call · <span class="pill ok">name</span> the Whop name is · <span class="pill">EOC form</span> neither found a call, the closer’s own End of Call form named her · <span class="pill">confirmed</span> a human confirmed it in the review queue · <span class="pill bad">nobody</span> nothing matched, it is in the review queue. <strong>Paid to date / Remaining</strong> follow the subscription that is actually on Whop, whatever link the closer sent. Commission is earned on each payment as it lands.</p></div>';
   const pg = document.getElementById("page-l1"); pg.innerHTML = h;
-  document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); document.getElementById("f-q").focus(); const i = document.getElementById("f-q"); i.setSelectionRange(i.value.length, i.value.length); };
+  document.getElementById("f-q").oninput = e => { L1.q = e.target.value; renderL1(); const i = document.getElementById("f-q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); };
   document.getElementById("f-person").onchange = e => { L1.person = e.target.value; renderL1(); };
-  document.getElementById("f-offer").onchange = e => { L1.offer = e.target.value; renderL1(); };
   pg.querySelectorAll("th.sort").forEach(t => t.onclick = () => { const k = t.dataset.key; if(L1.sort === k) L1.dir = L1.dir === "asc" ? "desc" : "asc"; else { L1.sort = k; L1.dir = k === "date" || k === "cash" ? "desc" : "asc"; } renderL1(); });
-  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Customer","Offer","Collected (initial)","Paid to date","Contracted","Remaining","Last payment","Pay type","Payment status","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid","DM setter"]].concat(rows.map(d => [d.date, d.prospect, d.offer, d.cash, d.collected, d.revenue, d.remaining, d.lastPayment, d.payType, d.whopStatus, title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no", title(d.dmSetter)])));
+  document.getElementById("csv1").onclick = () => downloadCSV("sca-deals-" + todayISO() + ".csv", [["Date","Customer (GHL)","Whop name","Email","Collected","Paid to date","Contracted","Remaining","Pay type","Payment","Match","Whop payment id","Closer","Closer commission","Closer paid","Setter","Setter commission","Setter paid"]].concat(rows.map(d => [d.date, d.prospect, d.whopName, d.email, d.cash, d.collected, d.contract, d.remaining ?? "", d.payType, d.refunded > 0 ? "refunded " + d.refunded : "verified", d.tier || "nobody", d.pid, title(d.closer), d.closerComm, d.closerPaid ? "yes" : "no", isPerson(d.setter) ? title(d.setter) : "", d.setterComm, d.setterPaid ? "yes" : "no"])));
 }
 
-/* ----- Ledger 2: payouts ----- */
+/* ----- Ledger 2 ----- */
 function renderL2(){
   document.getElementById("pg-title").textContent = "Ledger 2 · Payouts";
-  const live = S.payouts.filter(p => !truthy(p["Voided"])), voided = S.payouts.filter(p => truthy(p["Voided"]));
-  const mayaPaid = b => S.lines.filter(L => L.paid && L.payout && L.payout.source === "maya" && L.date >= b.from && L.date <= b.to);
-  const wires = S.maya.blocks.filter(b => b.wireSent).map(b => ({ label:b.label, date:b.wireDate, amount: mayaPaid(b).reduce((s,L) => s + L.amount, 0), n: mayaPaid(b).length })).filter(w => w.n > 0);
+  const all = S.ST.payouts || [], live = all.filter(p => !p.voided), voided = all.filter(p => p.voided);
   const hist = S.lines.filter(L => L.paid && L.payout && L.payout.source === "through");
   const histBy = {}; hist.forEach(L => histBy[L.person] = (histBy[L.person] || 0) + L.amount);
-  const total = live.reduce((s,p) => s + amt(p["Amount Paid"]), 0) + wires.reduce((s,w) => s + w.amount, 0) + hist.reduce((s,L) => s + L.amount, 0);
-  document.getElementById("pg-sub").textContent = num(live.length) + " payout" + (live.length === 1 ? "" : "s") + " · " + money(total) + " sent to the sales team" + (voided.length ? " · " + voided.length + " voided" : "");
+  const total = live.reduce((s,p) => s + (+p.amount || 0), 0) + hist.reduce((s,L) => s + L.amount, 0);
+  document.getElementById("pg-sub").textContent = num(live.length) + " payout" + (live.length === 1 ? "" : "s") + " logged · " + money(total) + " paid to the sales team since " + fmtD(S.C.dealsFrom) + (voided.length ? " · " + voided.length + " voided" : "");
   document.getElementById("pg-ctl").innerHTML = '<button class="btn" id="csv2">Download CSV</button>';
-  const byPerson = {}; live.forEach(p => { const k = normName(p["Person"]); byPerson[k] = (byPerson[k] || 0) + amt(p["Amount Paid"]); });
+  const byPerson = {}; live.forEach(p => { byPerson[p.person] = (byPerson[p.person] || 0) + (+p.amount || 0); });
   let h = '';
   const names = Object.keys(byPerson).sort((a,b) => byPerson[b] - byPerson[a]);
-  if(names.length) h += panel("Paid to date", '<div class="r4">' + names.slice(0,4).map(k => cell(title(k), money(byPerson[k]), {sub: live.filter(p => normName(p["Person"]) === k).length + " payouts"})).join("") + '</div>');
-  const rows = S.payouts.slice().sort((a,b) => String(a["Logged At"]||a["Date Paid"]) < String(b["Logged At"]||b["Date Paid"]) ? 1 : -1).map(p => {
-    const ids = String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean); const v = truthy(p["Voided"]);
-    const names = ids.map(id => (S.lines.find(L => L.id === id) || {}).prospect).filter(Boolean);
-    return [esc(fmtDY(p["Date Paid"])), esc(title(p["Person"])), esc(p["Role"] || "") || null, (v ? '<s>' : '') + money(amt(p["Amount Paid"])) + (v ? '</s>' : ''), has(p["Period"]) ? esc(String(p["Period"]).replace(/(\d{4}-\d\d-\d\d) to (\d{4}-\d\d-\d\d)/, (m,a,b) => fmtD(a) + " – " + fmtD(b))) : null,
-      ids.length ? '<button class="name-btn lines-btn" data-id="' + esc(p["Payout ID"]) + '">' + ids.length + ' line' + (ids.length === 1 ? "" : "s") + '</button>' : '<span class="mute">FIFO</span>',
-      names.length ? esc(names.slice(0,3).join(", ")) + (names.length > 3 ? " +" + (names.length - 3) : "") : null,
-      esc(p["Paid By"] || "") || null, esc(p["Notes"] || "") || null, '<span class="mute">' + esc(p["Payout ID"]) + '</span>',
-      v ? '<span class="pill bad">voided</span>' : '<button class="btn sm danger void-btn" data-id="' + esc(p["Payout ID"]) + '">Void</button>']; });
-  if(hist.length) h += panel("Paid before " + esc(fmtDY(S.paidThrough)) + " · historical payouts, already sent", '<div class="tw">' + tableInner(["Rep","Lines","Commission paid"], Object.keys(histBy).sort((a,b) => histBy[b] - histBy[a]).map(k => [esc(title(k)), num(hist.filter(L => L.person === k).length), money(histBy[k])]), {left:[0]}) + '</div>', "HQ Config → Paid through");
-  if(wires.length) h += panel("Wires on Maya's Commissions Tracker · blocks marked Wire Transfer Sent", '<div class="tw">' + tableInner(["Period","Wire date","Lines covered","Commission covered"], wires.map(w => [esc(w.label), esc(w.date || "—"), num(w.n), money(w.amount)]), {left:[0,1]}) + '</div>', "read-only");
+  if(names.length) h += panel("Paid through this page", '<div class="r4">' + names.slice(0,4).map(k => cell(title(k), money(byPerson[k]), {sub: live.filter(p => p.person === k).length + " payouts"})).join("") + '</div>');
+  const rows = all.slice().sort((a,b) => String(a.loggedAt) < String(b.loggedAt) ? 1 : -1).map(p => {
+    const ids = p.lines || [], v = !!p.voided, ns = ids.map(id => (S.lines.find(L => L.id === id) || {}).prospect).filter(Boolean);
+    return [esc(fmtDY(p.datePaid)), esc(title(p.person)), esc(p.role || "") || null, (v ? '<s>' : '') + money(+p.amount) + (v ? '</s>' : ''), p.period ? esc(String(p.period).replace(/(\d{4}-\d\d-\d\d) to (\d{4}-\d\d-\d\d)/, (m,a,b) => fmtD(a) + " – " + fmtD(b))) : null,
+      ids.length ? '<button class="name-btn lines-btn" data-id="' + esc(p.id) + '">' + ids.length + ' line' + (ids.length === 1 ? "" : "s") + '</button>' : '<span class="mute">oldest first</span>',
+      ns.length ? esc(ns.slice(0,3).join(", ")) + (ns.length > 3 ? " +" + (ns.length - 3) : "") : null, esc(p.paidBy || "") || null, esc(p.notes || "") || null, '<span class="mute">' + esc(p.id) + '</span>',
+      v ? '<span class="pill bad">voided</span>' : '<button class="btn sm danger void-btn" data-id="' + esc(p.id) + '">Void</button>']; });
+  if(hist.length) h += panel("Paid before " + esc(fmtDY(S.paidThrough)) + " · already sent, not logged here", '<div class="tw">' + tableInner(["Rep","Lines","Commission"], Object.keys(histBy).sort((a,b) => histBy[b] - histBy[a]).map(k => [esc(title(k)), num(hist.filter(L => L.person === k).length), money(histBy[k])]), {left:[0]}) + '</div>', "config.json → paidThrough");
   h += panel("Payouts", '<div class="tw">' + tableInner(["Paid","Rep","Role","Amount","Period","Lines","Deals","Paid by","Notes","ID",""], rows, {left:[1,2,6,7,8,9], empty:"No payouts logged yet. Tick Paid on the Pay Period page and the first one lands here."}) + '</div>', "newest first");
-  h += '<div class="note"><p><strong>Ledger 2 is the record of money actually sent.</strong> Each row is written when someone ticks Paid, and lists the exact commission lines it covered. <strong>Void</strong> keeps the row but un-marks its lines, so the amount goes back to owed. Nothing here is ever deleted.</p></div>';
+  h += '<div class="note"><p><strong>Ledger 2 is the record of money actually sent.</strong> Each row is written when someone ticks Paid, and lists the exact commission lines it covered. <strong>Void</strong> keeps the row but un-marks its lines, so the amount goes back to owed. Nothing here is ever deleted. Everything dated on or before ' + esc(fmtDY(S.paidThrough)) + ' was paid before this page existed and is summarised above.</p></div>';
   const pg = document.getElementById("page-l2"); pg.innerHTML = h;
   pg.querySelectorAll(".lines-btn").forEach(b => b.onclick = () => openPayout(b.dataset.id));
   pg.querySelectorAll(".void-btn").forEach(b => b.onclick = () => confirmVoid(b.dataset.id));
-  document.getElementById("csv2").onclick = () => downloadCSV("sca-payouts-" + todayISO() + ".csv", [["Payout ID","Date Paid","Person","Role","Amount Paid","Period","Deals Covered","Paid By","Notes","Voided"]].concat(S.payouts.map(p => ["Payout ID","Date Paid","Person","Role","Amount Paid","Period","Deals Covered","Paid By","Notes","Voided"].map(k => p[k] ?? ""))));
+  document.getElementById("csv2").onclick = () => downloadCSV("sca-payouts-" + todayISO() + ".csv", [["Payout ID","Date Paid","Person","Role","Amount","Period","Lines","Paid By","Notes","Voided"]].concat(all.map(p => [p.id, p.datePaid, p.person, p.role, p.amount, p.period, (p.lines||[]).join(" "), p.paidBy, p.notes, p.voided ? "yes" : "no"])));
 }
 function openPayout(id){
-  const p = S.payouts.find(x => String(x["Payout ID"]) === id); if(!p) return;
-  const ids = String(p["Deals Covered"]||"").split(",").map(s => s.trim()).filter(Boolean);
-  const ls = ids.map(i => S.lines.find(L => L.id === i)).filter(Boolean);
-  openDrawer(title(p["Person"]) + " · " + money(amt(p["Amount Paid"])), "Paid " + esc(fmtDY(p["Date Paid"])) + (has(p["Paid By"]) ? " by " + esc(p["Paid By"]) : "") + ' · <span class="mute">' + esc(id) + '</span>',
-    '<div class="tw">' + tableInner(["Date","Customer","Offer","Deal","Role on deal","Whop","Commission"], ls.map(lineRow), {left:[1,2,4]}) + '</div>' + (ids.length !== ls.length ? '<div class="empty">' + (ids.length - ls.length) + ' line id(s) on this payout no longer match a deal (the Cash Log row changed).</div>' : ''));
+  const p = (S.ST.payouts || []).find(x => x.id === id); if(!p) return;
+  const ls = (p.lines || []).map(i => S.lines.find(L => L.id === i)).filter(Boolean);
+  openDrawer(title(p.person) + " · " + money(+p.amount), "Paid " + esc(fmtDY(p.datePaid)) + (p.paidBy ? " by " + esc(p.paidBy) : "") + ' · <span class="mute">' + esc(id) + '</span>',
+    '<div class="tw">' + tableInner(["Date","Customer","Collected","Role on deal","Payment","Commission"], ls.map(lineRow), {left:[1,3]}) + '</div>' + ((p.lines||[]).length !== ls.length ? '<div class="empty">' + ((p.lines||[]).length - ls.length) + ' line id(s) on this payout no longer match a deal.</div>' : ''));
 }
 
 /* ---------------- writes ---------------- */
@@ -863,53 +754,52 @@ function modal(ttl, body, okLabel, onOk){
   const close = () => { m.classList.remove("on"); ok.onclick = null; };
   document.getElementById("md-cancel").onclick = () => { close(); if(onOk.cancel) onOk.cancel(); };
   ok.onclick = async () => { ok.disabled = true; try { await onOk(); close(); } catch(e){ ok.disabled = false; const er = document.getElementById("md-err"); if(er){ er.hidden = false; er.textContent = e.message; } } };
-  const f = m.querySelector("input,textarea"); if(f) f.focus();
+  const f = m.querySelector("input,textarea,select"); if(f) f.focus();
 }
+const byField = () => '<label>Your name<input type="text" id="md-by" value="' + esc(localStorage.getItem("hq.paidBy") || "") + '" placeholder="So the team knows who did this"></label>';
+const takeBy = () => { const who = document.getElementById("md-by").value.trim(); if(!who) throw new Error("Put your name first."); localStorage.setItem("hq.paidBy", who); return who; };
 function confirmPayout(k, onCancel){
   const p = S.people[k]; const s = personSummary(p);
   if(s.owedPeriod <= 0.004){ toast(title(k) + " has nothing owed in this period."); if(onCancel) onCancel(); return; }
-  const by = localStorage.getItem("hq.paidBy") || "";
-  const fn = async () => {
-    const paidBy = document.getElementById("md-by").value.trim(), notes = document.getElementById("md-notes").value.trim(), date = document.getElementById("md-date").value;
-    if(!paidBy) throw new Error("Who sent it? Put a name in Paid by.");
+  const fn = async () => { const paidBy = takeBy(), notes = document.getElementById("md-notes").value.trim(), date = document.getElementById("md-date").value;
     if(!/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error("Date needs to be YYYY-MM-DD.");
-    localStorage.setItem("hq.paidBy", paidBy);
-    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:Math.round(s.owedPeriod*100)/100, period:S.fromD + " to " + S.toD, datePaid:date, lines:s.periodLines.map(L => L.id), paidBy, notes }, "Logged " + money(s.owedPeriod) + " to " + title(k));
-    closeDrawer();
-  }; fn.cancel = onCancel;
+    await writeAction({ action:"payout", person:k, role:Object.keys(p.roles).join(" + "), amount:r2(s.owedPeriod), period:S.fromD + " to " + S.toD, datePaid:date, lines:s.periodLines.map(L => L.id), by:paidBy, notes }, "Logged " + money(s.owedPeriod) + " to " + title(k));
+    closeDrawer(); }; fn.cancel = onCancel;
   modal("Mark " + title(k) + " paid", '<div class="kv"><b>Amount</b><span style="font-family:var(--mono);font-weight:600">' + money(s.owedPeriod) + '</span><b>Period</b><span>' + esc(fmtD(S.fromD)) + ' – ' + esc(fmtD(S.toD)) + '</span><b>Covers</b><span>' + s.periodLines.length + ' line' + (s.periodLines.length === 1 ? "" : "s") + '</span></div>' +
-    (s.owedOutside > 0.004 ? '<div class="note warn" style="padding:8px 12px"><span>' + money(s.owedOutside) + ' more is unpaid outside this period (' + s.outside.length + ' line' + (s.outside.length === 1 ? "" : "s") + '). It is not included; widen the range to pay it.</span></div>' : '') +
-    '<label>Date paid<input type="text" id="md-date" value="' + todayISO() + '"></label><label>Paid by<input type="text" id="md-by" value="' + esc(by) + '" placeholder="Your name"></label><label>Note (optional)<input type="text" id="md-notes" placeholder="Gusto, Zelle, partial, etc."></label><div class="err" id="md-err" hidden></div>' +
-    '<div style="font-size:12px;color:var(--ink-3)">This writes one row to Ledger 2 and marks every line above as paid. Void it from Ledger 2 if it was a mistake.</div>', "Log payout", fn);
+    (s.owedOutside > 0.004 ? '<div class="note warn" style="padding:8px 12px"><span>' + money(s.owedOutside) + ' more is unpaid outside this period (' + s.outside.length + ' line' + (s.outside.length === 1 ? "" : "s") + '). Not included; widen the range to pay it.</span></div>' : '') +
+    '<label>Date paid<input type="text" id="md-date" value="' + todayISO() + '"></label>' + byField() + '<label>Note (optional)<input type="text" id="md-notes" placeholder="Gusto, Zelle, partial, etc."></label><div class="err" id="md-err" hidden></div>' +
+    '<div style="font-size:12px;color:var(--ink-3)">Writes one row to Ledger 2 and marks every line above as paid. Void it from Ledger 2 if it was a mistake.</div>', "Log payout", fn);
 }
 function dismissReview(id, onCancel){
   const r = S.reviews.find(x => x.id === id); if(!r) return;
-  const by = localStorage.getItem("hq.paidBy") || "";
-  const fn = async () => { const who = document.getElementById("md-by").value.trim(); if(!who) throw new Error("Put your name so the team knows who cleared it."); localStorage.setItem("hq.paidBy", who);
-    await writeAction({ action:"dismiss", id, title:r.title, by:who, note:document.getElementById("md-notes").value.trim() }, "Dismissed"); };
-  fn.cancel = onCancel;
-  modal("Dismiss this item", '<div style="font-weight:600;color:var(--ink)">' + esc(r.title) + '</div><label>Your name<input type="text" id="md-by" value="' + esc(by) + '"></label><label>What was done (optional)<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">Hides it for everyone. Restore from the “dismissed” button on the review panel.</div>', "Dismiss", fn);
+  const fn = async () => { const who = takeBy(); await writeAction({ action:"dismiss", id, title:r.title, by:who, note:document.getElementById("md-notes").value.trim() }, "Dismissed"); }; fn.cancel = onCancel;
+  modal("Dismiss this item", '<div style="font-weight:600;color:var(--ink)">' + esc(r.title) + '</div>' + byField() + '<label>What was done (optional)<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">Hides it for everyone. Restore from the “dismissed” button on the review panel.</div>', "Dismiss", fn);
 }
 function confirmVoid(id){
-  const p = S.payouts.find(x => String(x["Payout ID"]) === id); if(!p) return;
-  const fn = async () => { const who = document.getElementById("md-by").value.trim(); if(!who) throw new Error("Put your name."); localStorage.setItem("hq.paidBy", who);
-    await writeAction({ action:"void", id, by:who, note:document.getElementById("md-notes").value.trim() }, "Voided " + id); };
-  modal("Void payout " + id, '<div class="kv"><b>Rep</b><span>' + esc(title(p["Person"])) + '</span><b>Amount</b><span style="font-family:var(--mono)">' + money(amt(p["Amount Paid"])) + '</span></div><label>Your name<input type="text" id="md-by" value="' + esc(localStorage.getItem("hq.paidBy") || "") + '"></label><label>Why<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">The row stays in Ledger 2 marked voided; its lines go back to owed.</div>', "Void", fn);
+  const p = (S.ST.payouts || []).find(x => x.id === id); if(!p) return;
+  const fn = async () => { const who = takeBy(); await writeAction({ action:"void", id, by:who, note:document.getElementById("md-notes").value.trim() }, "Voided " + id); };
+  modal("Void payout " + id, '<div class="kv"><b>Rep</b><span>' + esc(title(p.person)) + '</span><b>Amount</b><span style="font-family:var(--mono)">' + money(+p.amount) + '</span></div>' + byField() + '<label>Why<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div><div style="font-size:12px;color:var(--ink-3)">The row stays in Ledger 2 marked voided; its lines go back to owed.</div>', "Void", fn);
+}
+/* A Whop payment nobody could match: a human picks the closer/setter; saved on the API as a manual match. */
+function assignMatch(item){
+  const names = (S.C.roster || []).map(r => normName(r.name)).filter(isPerson);
+  Object.keys(S.people).forEach(k => { if(!names.includes(k)) names.push(k); });
+  const opts = sel => '<option value="">—</option>' + names.map(n => '<option value="' + esc(n) + '"' + (n === sel ? ' selected' : '') + '>' + esc(title(n)) + '</option>').join("");
+  const sug = item.suggestion || null, d = S.dealRows.find(x => x.key === item.dealKey);
+  const fn = async () => {
+    const closer = document.getElementById("md-closer").value, setter = document.getElementById("md-setter").value, who = takeBy();
+    if(!closer && !setter) throw new Error("Pick a closer (or a setter).");
+    await writeAction({ action:"match", paymentId:item.pid, contactId: d ? d.contactId : "", closer: closer || (d ? d.closer : ""), setter, by:who, note: document.getElementById("md-notes").value.trim() || (sug ? "confirmed form suggestion: " + sug.prospect : "") }, "Saved"); };
+  modal("Who earns this?", '<div style="font-weight:600;color:var(--ink)">' + esc(item.title) + '</div>' +
+    (sug ? '<div class="note" style="padding:8px 12px"><span>Most likely: <b>' + esc(title(sug.closer)) + '</b> closed <b>' + esc(sug.prospect) + '</b> on ' + esc(fmtD(sug.date)) + ' for ' + money(sug.cash) + (sug.setter ? ', set by ' + esc(title(sug.setter)) : '') + '. Same person? Keep the names below and save.</span></div>' : '') +
+    '<label>Closer<select id="md-closer">' + opts(sug ? sug.closer : (item.closer || "")) + '</select></label><label>Setter<select id="md-setter">' + opts(sug ? sug.setter : (item.setter || "")) + '</select></label>' + byField() + '<label>Note (optional)<input type="text" id="md-notes"></label><div class="err" id="md-err" hidden></div>' +
+    '<div style="font-size:12px;color:var(--ink-3)">From then on this Whop payment (and its installments) pays that closer and setter. Saved on the API with your name and the time.</div>', "Save", fn);
 }
 async function writeAction(payload, okMsg){
-  if(!CFG.WEBAPP) throw new Error("No write endpoint configured (CFG.WEBAPP). Nothing was saved.");
-  if(!(await ensureToken())) throw new Error("No write key entered. Nothing was saved.");
-  const body = JSON.stringify(Object.assign({ token:S.token, client:"hq-web" }, payload));
-  let res, txt;
-  try { res = await fetch(CFG.WEBAPP, { method:"POST", body, headers:{ "Content-Type":"text/plain;charset=utf-8" }, redirect:"follow" }); txt = await res.text(); }
-  catch(e){ throw new Error("Could not reach the write endpoint: " + e.message); }
-  let j; try { j = JSON.parse(txt); } catch(e){ throw new Error("Write endpoint returned something that is not JSON (HTTP " + res.status + "). Is the deployment set to Anyone?"); }
-  if(!j.ok) throw new Error(j.error || "Write failed");
-  toast(okMsg + " · syncing…");
-  /* the sheet write is synchronous on the server; re-read to render the truth, not an optimistic guess */
-  await load();
-  toast(okMsg);
-  return j;
+  if(!S.token) throw new Error("Not signed in.");
+  const j = await api(null, payload);
+  S.ST = j.state || S.ST; compute(); renderAll();
+  toast(okMsg); return j;
 }
 
 /* ---------------- utils ---------------- */
@@ -918,24 +808,30 @@ function downloadCSV(name, rows){
   const csv = rows.map(r => r.map(v => { const s = String(v ?? ""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }).join(",")).join("\n");
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
-async function sha256(s){ const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,"0")).join(""); }
-
-/* ---------------- boot ---------------- */
-function enter(){
+window.__HQ = S;   /* read-only hook for the headless render check */
+/* ---------------- boot: the whole page is behind the admin password ---------------- */
+function gate(msg){
+  return new Promise(resolve => {
+    document.getElementById("page-pay").innerHTML = '<div class="panel"><div class="panel-head">Admin only</div><div style="padding:18px 16px;max-width:460px">' + (msg ? '<div class="note crit" style="margin-bottom:12px"><p>' + esc(msg) + '</p></div>' : '') +
+      '<p style="margin-bottom:10px">This page shows commissions for the whole sales team. Enter the admin password to continue.</p><label>Password<input type="password" id="gate-pw" autocomplete="current-password"></label><div style="margin-top:12px"><button class="btn primary" id="gate-go">Enter</button></div></div></div>';
+    const go = () => { const t = document.getElementById("gate-pw").value.trim(); if(!t) return;   /* the API is the judge, not this page */
+      S.token = t; try { localStorage.setItem("hq.tok", t); } catch(_){} resolve(true); };
+    document.getElementById("gate-go").onclick = go; document.getElementById("gate-pw").onkeydown = e => { if(e.key === "Enter") go(); }; document.getElementById("gate-pw").focus();
+  });
+}
+async function enter(){
   document.querySelectorAll(".nav button").forEach(b => b.onclick = () => showPage(b.dataset.page));
   document.getElementById("dr-close").onclick = closeDrawer; document.getElementById("scrim").onclick = closeDrawer;
   document.addEventListener("keydown", e => { if(e.key === "Escape"){ closeDrawer(); document.getElementById("modal").classList.remove("on"); } });
-  document.getElementById("page-pay").innerHTML = '<div class="panel"><div class="panel-head">Loading</div><div style="padding:16px;display:flex;flex-direction:column;gap:10px"><div class="skel" style="width:60%"></div><div class="skel" style="width:40%"></div><div class="skel" style="width:75%"></div></div></div>';
-  load().catch(e => { document.getElementById("page-pay").innerHTML = '<div class="note crit"><p><strong>Could not load the sheet.</strong> ' + esc(e.message) + '</p></div>'; });
-  setInterval(() => { if(document.visibilityState === "visible") load().catch(() => {}); }, 10 * 60 * 1000);
-}
-/* The write key (same value as HQ_TOKEN in the Apps Script) is asked for once per browser, the first time someone ticks a box. */
-async function ensureToken(){
-  if(S.token) return true;
+  S.page = ({ "#l1":"l1", "#l2":"l2" })[location.hash] || "pay";
   let t = ""; try { t = localStorage.getItem("hq.tok") || ""; } catch(_){}
-  if(!t){ t = window.prompt("Team write key (ask Patrick or Maya). Needed once on this browser to log payouts and dismiss items.") || ""; t = t.trim(); if(!t) return false; }
-  if(CFG.PASS_HASH !== "__PASS_HASH__" && (await sha256(t)) !== CFG.PASS_HASH){ try { localStorage.removeItem("hq.tok"); } catch(_){} toast("That write key is not right."); return false; }
-  S.token = t; try { localStorage.setItem("hq.tok", t); } catch(_){} return true;
+  if(t) S.token = t; else await gate();
+  for(;;){
+    document.getElementById("page-pay").innerHTML = '<div class="panel"><div class="panel-head">Loading Whop, GHL and the End of Call form</div><div style="padding:16px;display:flex;flex-direction:column;gap:10px"><div class="skel" style="width:60%"></div><div class="skel" style="width:40%"></div><div class="skel" style="width:75%"></div></div></div>';
+    try { await load(); break; }
+    catch(e){ if(/bad token/i.test(e.message)) await gate("That password was rejected. It must match HQ_TOKEN in the Apps Script exactly."); else { document.getElementById("page-pay").innerHTML = '<div class="note crit"><p><strong>Could not load.</strong> ' + esc(e.message) + '</p></div>'; return; } }
+  }
+  setInterval(() => { if(document.visibilityState === "visible") load().catch(() => {}); }, 10 * 60 * 1000);
 }
 enter();
 </script>
