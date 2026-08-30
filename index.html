@@ -259,8 +259,8 @@ label>input[type=password]{width:100%; margin-top:4px; padding:8px 10px; border:
    No spreadsheet anywhere. The page asks the Apps Script API (hq-api.gs) for
    { feeds, state }: feeds = Whop payments/memberships/plans, GHL events/users/
    contacts, End of Call Report form responses; state = payouts, dismissals,
-   manual matches. Settings live in config.json next to this file; pre-8/26
-   End-of-Call rows are a frozen snapshot in legacy-eoc.json.
+   manual matches, settings (hq-config.json) and the frozen pre-8/26 End-of-Call
+   history (hq-legacy.json), all from Patrick's private Drive folder.
    The whole page is behind one shared admin password (checked here by hash,
    and again by the API on every call).
    ===================================================================== */
@@ -537,8 +537,8 @@ function buildReviews(){
       ["Whop refunded " + money(d.refunded) + " of " + money(d.cash) + ". " + (paidLines.length ? esc(paidLines.map(L => title(L.person) + " " + money(L.amount)).join(", ")) + " was already paid on it." : "The commission (" + money(d.closerComm + d.setterComm) + ") has not been paid yet."),
        "There is no clawback rule. Decide with Gigi whether to deduct it from the next payout, and note it in the payout note when you do.", "Then tick this item to dismiss it."], { kind:"refund", dealKey:d.key }); });
 
-  /* Reps not in config.json */
-  Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => add("roster|" + k, "I", title(k) + " is not in the roster", ["Deals name <b>" + esc(title(k)) + "</b> but config.json has no row for them, so default rates apply (closer " + Math.round((S.C.closerRate || 0.1)*100) + "%, setter $" + (S.C.setterClose || 50) + ").", "Patrick: add a roster row in config.json and push. If this is a typo or the wrong person, reassign the deal instead."], {kind:"roster"}));
+  /* Reps not in the roster (hq-config.json in Drive) */
+  Object.keys(S.people).filter(k => !S.people[k].roster).forEach(k => add("roster|" + k, "I", title(k) + " is not in the roster", ["Deals name <b>" + esc(title(k)) + "</b> but the roster (hq-config.json in Patrick's Drive) has no row for them, so default rates apply (closer " + Math.round((S.C.closerRate || 0.1)*100) + "%, setter $" + (S.C.setterClose || 50) + ").", "Patrick: add a roster row to hq-config.json in Drive; it applies on the next refresh. If this is a typo or the wrong person, reassign the deal instead."], {kind:"roster"}));
 
   /* Late payment plans */
   S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > (S.C.lateDays || 35)).forEach(d =>
@@ -731,7 +731,7 @@ function renderL2(){
       ids.length ? '<button class="name-btn lines-btn" data-id="' + esc(p.id) + '">' + ids.length + ' line' + (ids.length === 1 ? "" : "s") + '</button>' : '<span class="mute">oldest first</span>',
       ns.length ? esc(ns.slice(0,3).join(", ")) + (ns.length > 3 ? " +" + (ns.length - 3) : "") : null, esc(p.paidBy || "") || null, esc(p.notes || "") || null, '<span class="mute">' + esc(p.id) + '</span>',
       v ? '<span class="pill bad">voided</span>' : '<button class="btn sm danger void-btn" data-id="' + esc(p.id) + '">Void</button>']; });
-  if(hist.length) h += panel("Paid before " + esc(fmtDY(S.paidThrough)) + " · already sent, not logged here", '<div class="tw">' + tableInner(["Rep","Lines","Commission"], Object.keys(histBy).sort((a,b) => histBy[b] - histBy[a]).map(k => [esc(title(k)), num(hist.filter(L => L.person === k).length), money(histBy[k])]), {left:[0]}) + '</div>', "config.json → paidThrough");
+  if(hist.length) h += panel("Paid before " + esc(fmtDY(S.paidThrough)) + " · already sent, not logged here", '<div class="tw">' + tableInner(["Rep","Lines","Commission"], Object.keys(histBy).sort((a,b) => histBy[b] - histBy[a]).map(k => [esc(title(k)), num(hist.filter(L => L.person === k).length), money(histBy[k])]), {left:[0]}) + '</div>', "hq-config.json → paidThrough");
   h += panel("Payouts", '<div class="tw">' + tableInner(["Paid","Rep","Role","Amount","Period","Lines","Deals","Paid by","Notes","ID",""], rows, {left:[1,2,6,7,8,9], empty:"No payouts logged yet. Tick Paid on the Pay Period page and the first one lands here."}) + '</div>', "newest first");
   h += '<div class="note"><p><strong>Ledger 2 is the record of money actually sent.</strong> Each row is written when someone ticks Paid, and lists the exact commission lines it covered. <strong>Void</strong> keeps the row but un-marks its lines, so the amount goes back to owed. Nothing here is ever deleted. Everything dated on or before ' + esc(fmtDY(S.paidThrough)) + ' was paid before this page existed and is summarised above.</p></div>';
   const pg = document.getElementById("page-l2"); pg.innerHTML = h;
