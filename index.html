@@ -567,6 +567,18 @@ function buildReviews(){
   S.dealRows.filter(d => /plan/i.test(d.payType) && d.remaining > 0 && d.lastPayment && daysBetween(d.lastPayment, today) > (S.C.lateDays || 35)).forEach(d =>
     add("late|" + d.key + "|" + d.lastPayment, "I", d.prospect + " may be late on her plan", ["Last Whop payment " + fmtDY(d.lastPayment) + " (" + daysBetween(d.lastPayment, today) + " days ago). Collected " + money(d.collected) + " of " + money(d.contract) + ", " + money(d.remaining) + " remaining.", "Whop retries failed installments itself. If she cancelled, the balance is gone; nothing changes here because commission is only paid on cash that landed.", "Tick to dismiss once someone has followed up."], {kind:"late", dealKey:d.key}));
 
+  /* NOW = touches money that has not been paid yet, or the system itself. HISTORY = everything dated inside the
+     already-paid window (config paidThrough): worth fixing for the record, never worth a decision today. */
+  const PT = S.paidThrough || "";
+  out.forEach(r => {
+    const kind = r.id.split("|")[0], d = r.dealKey ? S.dealRows.find(x => x.key === r.dealKey) : null;
+    if(r.locked || kind === "feed" || kind === "cfg" || kind === "roster" || kind === "form-only") r.now = true;
+    else if(kind === "legacy") r.now = (S.orphanCycles || []).some(c => c.dealKey === r.dealKey && c.date > PT);
+    else if(kind === "late") r.now = false;
+    else if(kind === "refund") r.now = /already paid/.test(r.title) && r.level === "U";
+    else r.now = !d || !PT || d.date > PT;
+    if(!r.now && r.level === "U") r.level = "I";   /* nothing in history is urgent by definition */
+  });
   const order = { U:0, I:1 };
   return out.sort((a,b) => (a.locked ? -1 : 0) - (b.locked ? -1 : 0) || order[a.level] - order[b.level]);
 }
@@ -574,7 +586,7 @@ function buildReviews(){
 
 /* ---------------- render ---------------- */
 function renderAll(){
-  const open = S.reviews.filter(r => !r.dismissed), urgent = open.filter(r => r.level === "U").length;
+  const open = S.reviews.filter(r => !r.dismissed && r.now), urgent = open.filter(r => r.level === "U").length;
   const c = document.getElementById("cnt-pay"); c.hidden = !open.length; c.textContent = open.length; c.classList.toggle("hot", urgent > 0);
   const c1 = document.getElementById("cnt-l1"); c1.hidden = !S.dealRows.length; c1.textContent = S.dealRows.length;
   const livePO = (S.ST.payouts || []).filter(p => !p.voided); const c2 = document.getElementById("cnt-l2"); c2.hidden = !livePO.length; c2.textContent = livePO.length;
@@ -638,14 +650,20 @@ function renderPay(){
   const dealsW = S.dealRows.filter(d => inRange(d.date) && !d.legacy), linesW = S.lines.filter(L => inRange(L.date));
   const names = Object.keys(S.people).map(k => ({ k, s: personSummary(S.people[k]) })).filter(x => x.s.owedPeriod > 0.004).sort((a,b) => b.s.owedPeriod - a.s.owedPeriod);
   const totalOwed = names.reduce((s,x) => s + x.s.owedPeriod, 0);
-  const open = S.reviews.filter(r => !r.dismissed), dismissed = S.reviews.filter(r => r.dismissed);
+  const open = S.reviews.filter(r => !r.dismissed && r.now), history = S.reviews.filter(r => !r.dismissed && !r.now), dismissed = S.reviews.filter(r => r.dismissed);
 
   let h = "";
   const qi = r => '<div class="qi' + (r.locked ? ' locked' : '') + '" data-id="' + esc(r.id) + '">' +
     '<input type="checkbox" aria-label="Dismiss" ' + (r.locked ? 'disabled' : '') + '>' +
     '<div class="b"><div class="t"><span class="lv ' + (r.level === "U" ? "u" : "i") + '">' + (r.level === "U" ? "Urgent" : "Info") + '</span>' + esc(r.title) + '</div><div class="d"><ol class="steps">' + r.steps.map(s => '<li>' + s + '</li>').join("") + '</ol>' + (r.action ? '<button class="btn sm assign-btn" data-id="' + esc(r.id) + '">' + esc(r.action) + '</button>' : '') + '</div></div></div>';
-  h += panel("Needs review", open.length ? '<div class="q" id="queue">' + open.map(qi).join("") + '</div>' : '<div class="empty">Nothing needs a human right now. Every Whop payment since ' + esc(fmtD(S.C.dealsFrom)) + ' has a closer.</div>',
+  h += panel("Needs a decision · affects money not yet paid", open.length ? '<div class="q" id="queue">' + open.map(qi).join("") + '</div>' : '<div class="empty">Nothing needs a decision. Every unpaid Whop payment has a closer.</div>',
     (dismissed.length ? '<button class="btn sm" id="show-dismissed" style="background:transparent;color:inherit;border-color:rgba(255,255,255,.35)">' + dismissed.length + ' dismissed</button>' : 'tick to dismiss'));
+  if(history.length){
+    const legacyN = history.filter(r => /^legacy\|/.test(r.id)).length, showHist = S.showHistory;
+    h += '<div class="panel"><div class="panel-head"><span>History · ' + history.length + ' record-only item' + (history.length === 1 ? '' : 's') + ' from before ' + esc(fmtD(S.paidThrough)) + '</span><span class="r"><button class="btn sm" id="toggle-history" style="background:transparent;color:inherit;border-color:rgba(255,255,255,.35)">' + (showHist ? 'Hide' : 'Show') + '</button></span></div>' +
+      (showHist ? '<div class="q" id="queue-history">' + history.map(qi).join("") + '</div>'
+                : '<div style="padding:12px 16px;font-size:13px;color:var(--ink-3)">Everything here is dated inside the period that was already paid out, so it changes no payout. It is mostly what was not tracked before this page existed' + (legacyN ? ': ' + legacyN + ' payment plans from before ' + esc(fmtD(S.C.dealsFrom)) + ' with no closer named' : '') + '. Fix them when convenient, in any order; nothing breaks while they sit here.</div>') + '</div>';
+  }
 
   const payRows = names.map(x => { const p = S.people[x.k], s = x.s;
     return ['<button class="name-btn" data-person="' + esc(x.k) + '">' + esc(title(x.k)) + '</button>', '<span class="role">' + esc(Object.keys(p.roles).join(" + ")) + '</span>', num(s.periodLines.length), '<span class="owed">' + money(s.owedPeriod) + '</span>',
@@ -668,7 +686,8 @@ function renderPay(){
   const pg = document.getElementById("page-pay"); pg.innerHTML = h;
   pg.querySelectorAll(".name-btn").forEach(b => b.onclick = () => openPerson(b.dataset.person));
   pg.querySelectorAll(".pay-chk").forEach(b => b.onchange = () => { if(b.checked) confirmPayout(b.dataset.person, () => { b.checked = false; }); });
-  pg.querySelectorAll("#queue .qi input").forEach(b => b.onchange = () => { if(b.checked) dismissReview(b.closest(".qi").dataset.id, () => { b.checked = false; }); });
+  pg.querySelectorAll("#queue .qi input, #queue-history .qi input").forEach(b => b.onchange = () => { if(b.checked) dismissReview(b.closest(".qi").dataset.id, () => { b.checked = false; }); });
+  const th = document.getElementById("toggle-history"); if(th) th.onclick = () => { S.showHistory = !S.showHistory; renderPay(); };
   pg.querySelectorAll(".assign-btn").forEach(b => b.onclick = () => { const it = S.reviews.find(x => x.id === b.dataset.id); if(it) assignMatch(it); });
   const sd = document.getElementById("show-dismissed"); if(sd) sd.onclick = () => openDismissed();
   const sa = document.getElementById("show-all"); if(sa) sa.onclick = () => { const r = presetRange("since-paid"); S.fromD = r[0]; S.toD = r[1]; renderPay(); };
