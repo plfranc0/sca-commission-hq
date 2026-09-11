@@ -320,7 +320,16 @@ const isCloser = n => { const ro = rosterFor(n); return !!ro && /closer/i.test(r
 function compute(){
   const F = S.F, C = S.C, today = todayISO();
   const PAID_THROUGH0 = C.paidThrough || "", DEALS_FROM = C.dealsFrom || "2026-07-01", FLAT_FROM = C.flatFrom || "2026-08-27", WIN = C.matchWindowDays || 3;
-  const rateFor = (closer, formRate) => { if(/15/.test(String(formRate||""))) return C.selfBookedRate || 0.15; const ro = rosterFor(closer); return ro && ro.closerRate ? ro.closerRate : (C.closerRate || 0.10); };
+  /* Self-booked 15% retired 2026-09-09 (Maya: "the maximum comms are 10%, even if a closer
+     sets the call themselves - this is outdated from Jaiden"). The End of Call form no longer
+     offers the option, so no NEW report can ask for 15%. For the 6 reports that already say it:
+     a payment COLLECTED on or before SELF_BOOKED_UNTIL keeps the 15% it was earned at (no
+     clawback, same rule as refunds), and every payment after that date - including later
+     installments on those same plans - pays the roster 10%.
+     The date is FROZEN on purpose. It must never be wired to paidThrough: that advances every
+     payout week, which would silently hand 15% back to each new week's payments. */
+  const SELF_BOOKED_UNTIL = C.selfBookedUntil || "2026-09-10";
+  const rateFor = (closer, formRate, payDate) => { if(/15/.test(String(formRate||"")) && payDate && String(payDate) <= SELF_BOOKED_UNTIL) return C.selfBookedRate || 0.15; const ro = rosterFor(closer); return ro && ro.closerRate ? ro.closerRate : (C.closerRate || 0.10); };
   const setterFlat = setter => { const ro = rosterFor(setter); return ro && ro.close ? ro.close : (C.setterClose || 50); };
   const people = {}, lines = [];
   const P = name => { if(!people[name]) people[name] = { name, roster: rosterFor(name), roles:{}, lines:[] }; return people[name]; };
@@ -420,7 +429,7 @@ function compute(){
       installments:0, lastPayment:p.date, membership:p.membership, plan: pl ? pl.name : "", closerComm:0, setterComm:0, lines:[], source:"whop", legacy, formRate: M.eoc ? M.eoc.rate : "", refundedInst:[] };
     if(legacy) S.legacyPlans++;
     /* the anchor's own commission: only when it is a real deal inside the tracker window and the money stayed */
-    if(!legacy && !p.fullRefund && isPerson(d.closer)){ d.closerComm = r2(p.amount * rateFor(d.closer, d.formRate)); addLine(d, p, "Closer", d.closer, d.closerComm, "close", key + "|C");
+    if(!legacy && !p.fullRefund && isPerson(d.closer)){ d.closerComm = r2(p.amount * rateFor(d.closer, d.formRate, p.date)); addLine(d, p, "Closer", d.closer, d.closerComm, "close", key + "|C");
       if(isPerson(d.setter)){ d.setterComm = p.date >= FLAT_FROM ? setterFlat(d.setter) : r2(p.amount * (C.setterRateBefore || 0.05)); addLine(d, p, "Setter", d.setter, d.setterComm, p.date >= FLAT_FROM ? "set-close" : "set-pct", key + "|S"); } }
     /* installments: every later charge on the same membership pays the same closer as it lands */
     g.later.forEach(q => {
@@ -428,7 +437,7 @@ function compute(){
       if(q.refunded > 0) d.refundedInst.push(q);
       if(q.date < DEALS_FROM || q.fullRefund) return;
       if(!isPerson(d.closer)){ S.orphanCycles.push({ pid:q.id, date:q.date, amount:q.amount, name:p.name, email:p.email, dealKey:key }); return; }
-      const a = r2(q.amount * rateFor(d.closer, d.formRate)); addLine(d, q, "Closer", d.closer, a, "installment", "I|" + q.id + "|C"); if(legacy) d.closerComm += a; });
+      const a = r2(q.amount * rateFor(d.closer, d.formRate, q.date)); addLine(d, q, "Closer", d.closer, a, "installment", "I|" + q.id + "|C"); if(legacy) d.closerComm += a; });
     S.dealRows.push(d);
   });
 
